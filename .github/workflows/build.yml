@@ -1,0 +1,132 @@
+name: Build PdfCraft for Alpine Linux (musl)
+
+# Builds an unofficial PdfCraft binary for Alpine Linux (x86_64, musl libc) and
+# publishes it as a GitHub Release. The source is fetched from the upstream
+# repository at build time; this repository holds only the build harness.
+#
+# Default target: storytold/pdfcraft PR #2808 (branch fix/79-status-layers),
+# which fixes issue #79 ("Signature Not Verified" appearance not updating).
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: Upstream repository (owner/name) that carries the fix
+        type: string
+        default: chiranjeevi-max/pdfcraft
+      ref:
+        description: Branch name or commit SHA to build
+        type: string
+        default: fix/79-status-layers
+      craft_fonts_ref:
+        description: storytold/craft-fonts commit to embed (empty to skip)
+        type: string
+        default: 3d9ab3a132ed0eff457e424226a435a901da30d3
+      release_tag:
+        description: Release tag to publish the binaries to
+        type: string
+        default: pr79-alpine
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: alpine-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      UPSTREAM: ${{ inputs.upstream || 'chiranjeevi-max/pdfcraft' }}
+      REF: ${{ inputs.ref || 'fix/79-status-layers' }}
+      CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'pr79-alpine' }}
+      RUST_IMAGE: rust:alpine
+      PDFCRAFT_BUILD_LABEL: alpine
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "3"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space on the runner
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Prepare working directories
+        run: mkdir -p work/src work/cargo-home work/target work/stage out
+
+      - name: Fetch the Alpine Rust image
+        run: docker pull "$RUST_IMAGE"
+
+      # The registry/git cache and the compiler cache live on the host (bind
+      # mounts) so a failed build can be resumed without recompiling the world.
+      - name: Cache cargo home and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            work/cargo-home
+            work/target
+          key: alpine-v1-${{ env.REF }}-${{ github.run_id }}
+          restore-keys: |
+            alpine-v1-${{ env.REF }}-
+
+      - name: Build inside the Alpine container
+        run: |
+          docker run --rm \
+            --volume "$PWD:/github" \
+            --workdir /github \
+            --env UPSTREAM --env REF --env CRAFT_FONTS_REF --env PDFCRAFT_BUILD_LABEL \
+            --env CARGO_HOME=/github/work/cargo-home \
+            --env CARGO_TARGET_DIR=/github/work/target \
+            --env CARGO_NET_GIT_FETCH_WITH_CLI --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
+            "$RUST_IMAGE" \
+            sh /github/scripts/build-alpine.sh
+
+      - name: Show what was produced
+        if: always()
+        run: |
+          ls -lR out | head -100
+          df -h /
+
+      # The container runs as root; hand the output back to the runner user so
+      # the artifact and cache steps can read it.
+      - name: Fix ownership of build output
+        if: always()
+        run: |
+          docker run --rm --volume "$PWD:/github" \
+            --env U="$(id -u)" --env G="$(id -g)" \
+            "$RUST_IMAGE" sh -c 'chown -R "$U:$G" /github/out /github/work 2>/dev/null || true'
+
+      - name: Upload workflow artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcraft-alpine-x86_64
+          path: out/*
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="$RELEASE_TAG"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" out/* --clobber
+          else
+            gh release create "$tag" out/* \
+              --title "PdfCraft for Alpine Linux (musl) — build of PR #2808" \
+              --notes-file .github/release-notes.md \
+              --prerelease
+          fi

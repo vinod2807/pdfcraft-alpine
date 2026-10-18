@@ -1,0 +1,77 @@
+PdfCraft for Alpine Linux (x86_64, musl)
+========================================
+
+This is an UNOFFICIAL build of PdfCraft (https://github.com/storytold/pdfcraft)
+compiled against musl libc so it runs on Alpine Linux. It contains the fix from
+pull request #2808 (issue #79): signed appearances now show their real
+validation state (green tick / "Signature valid") instead of the stored
+"Signature Not Verified" image.
+
+THIS ARCHIVE
+------------
+  usr/bin/pdfcraft               the desktop application (GUI)
+  usr/bin/pdfcraft-cli           headless CLI / MCP server
+  usr/share/...                  desktop entry, MIME, icons, AppStream metadata
+  usr/share/pdfcraft/models/     OCR models (optional; used by Scan & OCR)
+  usr/share/doc/pdfcraft/        licences and attribution
+  BUILD-INFO.txt                 exact commit, toolchain and ELF dependencies
+
+INSTALL
+-------
+  sudo tar -xzf pdfcraft-<version>-alpine-x86_64.tar.gz -C /
+  # or, if you unpacked the tarball somewhere else:
+  sudo cp -a pdfcraft-<version>-alpine-x86_64/usr /
+  sudo update-desktop-database 2>/dev/null || true
+  sudo update-mime-database /usr/share/mime 2>/dev/null || true
+
+RUN
+---
+  pdfcraft                 # opens the GUI
+  pdfcraft some.pdf        # opens a document
+  pdfcraft-cli --help      # headless usage
+
+RUNTIME DEPENDENCIES (install these on Alpine)
+----------------------------------------------
+The windowing and GPU libraries are loaded at runtime (dlopen), so they are not
+hard links in the binary. Install what your session needs:
+
+  # X11 session
+  apk add libxkbcommon libx11 libxcursor libxrandr libxi
+
+  # Wayland session
+  apk add libxkbcommon wayland-libs-client
+
+  # GPU: hardware Vulkan, or software rendering
+  apk add vulkan-loader mesa-vulkan-swrast        # software Vulkan (works anywhere)
+  # apk add mesa-vulkan-intel | mesa-vulkan-ati | mesa-vulkan-nouveau  # by GPU
+
+  # OpenGL fallback (PDFCRAFT_RENDERER=gl)
+  apk add mesa-gl mesa-egl mesa-dri-gallium
+
+  # optional: print dialog (CUPS)
+  apk add cups-client cups-libs
+
+  # optional: native file-open dialogs via xdg-desktop-portal
+  apk add xdg-desktop-portal
+
+If no GPU driver works, try:
+
+  PDFCRAFT_RENDERER=gl pdfcraft some.pdf
+
+  # list the installed Vulkan drivers, then point the app at the software one:
+  ls /usr/share/vulkan/icd.d/
+  VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/<file>.json pdfcraft some.pdf
+
+KNOWN DIFFERENCES FROM THE OFFICIAL BUILD
+-----------------------------------------
+ * Built against musl, not glibc. This is a third-party build, not published by
+   the PdfCraft authors.
+ * `--version` shows a build label so it is never mistaken for an official one.
+ * File-open dialogs need an xdg-desktop-portal backend; without one, pass the
+   path on the command line or drag the file onto the window.
+
+LICENCE
+-------
+PdfCraft is licensed MIT OR Apache-2.0. See usr/share/doc/pdfcraft/ for the full
+licence texts and NOTICE/ATTRIBUTION. This build redistributes unmodified
+upstream source; only the toolchain differs.
