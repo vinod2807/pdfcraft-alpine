@@ -29,12 +29,14 @@ rm -rf "$SRC"
 mkdir -p "$SRC"
 git -C "$SRC" init -q
 git -C "$SRC" remote add origin "https://github.com/$UPSTREAM.git"
+git config --global --add safe.directory "$SRC"
 git -C "$SRC" fetch --depth 1 -q origin "$REF"
 git -C "$SRC" checkout -q FETCH_HEAD
 
 if [ -n "$CRAFT_FONTS_REF" ]; then
   CRAFT_FONTS_DIR="$WORK/craft-fonts"
   git clone --depth 1 "https://github.com/storytold/craft-fonts.git" "$CRAFT_FONTS_DIR"
+  git config --global --add safe.directory "$CRAFT_FONTS_DIR"
   git -C "$CRAFT_FONTS_DIR" fetch --depth 1 origin "$CRAFT_FONTS_REF"
   git -C "$CRAFT_FONTS_DIR" checkout -q FETCH_HEAD
   export CRAFT_FONTS_DIR
