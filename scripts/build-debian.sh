@@ -57,5 +57,5 @@ DEB="$(find "$OUT" -maxdepth 1 -type f -name '*.deb' -print -quit)"
 dpkg-deb --info "$DEB"
 dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft$'
 dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft-cli$'
-sha256sum "$DEB" > "$OUT/SHA256SUMS"
+(cd "$OUT" && sha256sum "$(basename "$DEB")" > SHA256SUMS)
 ls -lh "$OUT"
