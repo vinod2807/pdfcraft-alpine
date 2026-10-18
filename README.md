@@ -55,8 +55,20 @@ If the GPU stack does not come up, try `PDFCRAFT_RENDERER=gl pdfcraft some.pdf`.
 See the `INSTALL.txt` inside the tarball for the full notes.
 
 > This is not a distribution package: it is a musl-linked binary built on
-> `rust:alpine`. It works on Alpine; it will **not** run on glibc distributions,
+> `rust:1.99-alpine3.24`. It works on Alpine; it will **not** run on glibc distributions,
 > and the official builds will **not** run on Alpine.
+
+Both executables are linked against the system musl (`crt-static` disabled), which is
+what Alpine does for its own Rust packages. Rust's musl target links statically by
+default, but musl's `dlopen()` refuses to load libraries from a static binary
+("Dynamic loading not supported"), and winit opens libX11 / libxkbcommon / Vulkan with
+`dlopen` — a static build starts the CLI but never opens a window. musl itself is part
+of every Alpine; only the libraries listed above need installing.
+
+Verified on Alpine 3.24 (x86_64): `pdfcraft-cli` reports `pdfcraft-cli 0.8.0 (alpine)`,
+the CLI parses/text-extracts/renders a real PDF, and the GUI opens on an X11 session.
+(An earlier static build of this harness could not start the GUI at all — see the
+`crt-static` note in `scripts/build-alpine.sh`.)
 
 ## Rebuild it yourself
 

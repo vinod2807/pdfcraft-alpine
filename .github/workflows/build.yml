@@ -45,7 +45,8 @@ jobs:
       REF: ${{ inputs.ref || 'fix/79-status-layers' }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'pr79-alpine' }}
-      RUST_IMAGE: rust:alpine
+      # Pinned so a surprise rust:alpine bump cannot silently change the build.
+      RUST_IMAGE: rust:1.99-alpine3.24
       PDFCRAFT_BUILD_LABEL: alpine
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CARGO_TERM_COLOR: always
@@ -117,6 +118,20 @@ jobs:
           tar -tzf "$tgz" | grep -q '/usr/bin/pdfcraft$' || { echo "::error::the tarball has no pdfcraft binary"; exit 1; }
           tar -tzf "$tgz" | grep -q '/usr/bin/pdfcraft-cli$' || { echo "::error::the tarball has no pdfcraft-cli binary"; exit 1; }
           tar -tzf "$tgz" | grep -q 'text-recognition.rten' || echo "::warning::the OCR models are missing from the tarball (Scan & OCR will be unavailable)"
+
+      - name: Verify the .apk
+        run: |
+          set -e
+          apkfile="$(ls out/*.apk)"
+          echo "checking $apkfile ($(stat -c%s "$apkfile") bytes)"
+          # An .apk is gzip(control tar) followed by gzip(data tar) with no
+          # terminator in between, so one gunzip + tar -t lists both sections.
+          list="$(gzip -dc "$apkfile" | tar -tf - || true)"
+          echo "$list" | grep -qx '\.PKGINFO' || { echo "::error::the .apk has no control section"; exit 1; }
+          echo "$list" | grep -q 'usr/bin/pdfcraft$' || { echo "::error::the .apk has no pdfcraft binary"; exit 1; }
+          echo "$list" | grep -q 'usr/bin/pdfcraft-cli$' || { echo "::error::the .apk has no pdfcraft-cli binary"; exit 1; }
+          echo "$list" | grep -q 'text-recognition.rten' || echo "::warning::the OCR models are missing from the .apk"
+          echo "$list" | wc -l
 
       - name: Upload workflow artifacts
         if: success()
