@@ -25,33 +25,53 @@ rustc -V
 cargo -V
 
 echo "=== installing build dependencies ==="
+# curl is not in the rust:alpine image and `cargo xtask models` shells out to it.
 apk add --no-cache \
-  build-base binutils cmake perl pkgconf git ca-certificates \
+  build-base binutils cmake perl pkgconf git ca-certificates curl \
   linux-headers \
   wayland-dev wayland-protocols libxkbcommon-dev \
   libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
   mesa-dev
 
 echo "=== fetching $UPSTREAM @ $REF ==="
-rm -rf "$SRC"
-mkdir -p "$SRC"
-git init -q "$SRC"
-git -C "$SRC" remote add origin "https://github.com/${UPSTREAM}.git"
+# Reuse a cached checkout when possible: a fresh clone gives every source file a
+# new mtime, which makes cargo rebuild the whole graph and throws the target
+# cache away. Reusing it keeps mtimes stable, so only real changes recompile.
+EXPECTED_REMOTE="https://github.com/${UPSTREAM}.git"
+if [ -d "$SRC/.git" ] && [ "$(git -C "$SRC" remote get-url origin 2>/dev/null || true)" = "$EXPECTED_REMOTE" ]; then
+  echo "reusing the cached checkout"
+else
+  rm -rf "$SRC"
+  mkdir -p "$SRC"
+  git init -q "$SRC"
+  git -C "$SRC" remote add origin "$EXPECTED_REMOTE"
+fi
 if ! git -C "$SRC" fetch --depth 1 -q origin "$REF"; then
   echo "ERROR: could not fetch '$REF' from $UPSTREAM" >&2
   exit 1
 fi
 git -C "$SRC" checkout -q FETCH_HEAD
+if [ -n "$(git -C "$SRC" status --porcelain)" ]; then
+  echo "WARNING: the cached checkout was dirty; resetting it" >&2
+  git -C "$SRC" reset -q --hard FETCH_HEAD
+  git -C "$SRC" clean -qfd
+fi
 UPSTREAM_SHA="$(git -C "$SRC" rev-parse HEAD)"
 echo "upstream commit: $UPSTREAM_SHA"
 
 # Optional craft-fonts build input (public repo): embeds Japanese/Arabic faces.
 if [ -n "$CRAFT_FONTS_REF" ]; then
   CF="$WORK/craft-fonts"
-  rm -rf "$CF"
-  mkdir -p "$CF"
-  git init -q "$CF"
-  git -C "$CF" remote add origin https://github.com/storytold/craft-fonts.git
+  CF_REMOTE=https://github.com/storytold/craft-fonts.git
+  # Reused for the same mtime reason as the source checkout above.
+  if [ -d "$CF/.git" ] && [ "$(git -C "$CF" remote get-url origin 2>/dev/null || true)" = "$CF_REMOTE" ]; then
+    echo "reusing the cached craft-fonts checkout"
+  else
+    rm -rf "$CF"
+    mkdir -p "$CF"
+    git init -q "$CF"
+    git -C "$CF" remote add origin "$CF_REMOTE"
+  fi
   if git -C "$CF" fetch --depth 1 -q origin "$CRAFT_FONTS_REF"; then
     git -C "$CF" checkout -q FETCH_HEAD
     CRAFT_FONTS_DIR="$CF"

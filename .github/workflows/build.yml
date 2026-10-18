@@ -70,15 +70,17 @@ jobs:
 
       # The registry/git cache and the compiler cache live on the host (bind
       # mounts) so a failed build can be resumed without recompiling the world.
-      - name: Cache cargo home and target
+      - name: Cache cargo home, target and checkouts
         uses: actions/cache@v4
         with:
           path: |
             work/cargo-home
             work/target
-          key: alpine-v1-${{ env.REF }}-${{ github.run_id }}
+            work/src
+            work/craft-fonts
+          key: alpine-v2-${{ env.REF }}-${{ github.run_id }}
           restore-keys: |
-            alpine-v1-${{ env.REF }}-
+            alpine-v2-${{ env.REF }}-
 
       - name: Build inside the Alpine container
         run: |
@@ -106,6 +108,15 @@ jobs:
           docker run --rm --volume "$PWD:/github" \
             --env U="$(id -u)" --env G="$(id -g)" \
             "$RUST_IMAGE" sh -c 'chown -R "$U:$G" /github/out /github/work 2>/dev/null || true'
+
+      - name: Verify the tarball
+        run: |
+          set -e
+          tgz="$(ls out/*.tar.gz)"
+          echo "checking $tgz"
+          tar -tzf "$tgz" | grep -q '/usr/bin/pdfcraft$' || { echo "::error::the tarball has no pdfcraft binary"; exit 1; }
+          tar -tzf "$tgz" | grep -q '/usr/bin/pdfcraft-cli$' || { echo "::error::the tarball has no pdfcraft-cli binary"; exit 1; }
+          tar -tzf "$tgz" | grep -q 'text-recognition.rten' || echo "::warning::the OCR models are missing from the tarball (Scan & OCR will be unavailable)"
 
       - name: Upload workflow artifacts
         if: success()
