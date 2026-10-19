@@ -25,6 +25,18 @@ Both executables are built:
 | `pdfcraft` | the desktop application (egui/wgpu GUI) |
 | `pdfcraft-cli` | the headless CLI / MCP server |
 
+The **Build PdfCraft for Debian and Ubuntu** workflow also produces an amd64
+`.deb` from glibc-based Debian 12 (and Ubuntu 22.04+) compatible binaries. It
+uses the upstream `packaging/linux/package.sh` staging and dependency metadata,
+so the package installs the desktop entry, MIME association, icons, OCR models,
+and both executables. It is independent of the Alpine `.apk` build.
+
+Install the Debian/Ubuntu asset with:
+
+```sh
+sudo apt install ./pdfcraft-<version>-debian-linux-x86_64.deb
+```
+
 ## Download & install
 
 Grab the assets from the [latest release](../../releases). You want

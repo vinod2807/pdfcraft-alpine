@@ -1,0 +1,81 @@
+name: Build PdfCraft for Debian and Ubuntu
+
+# This repository is a build harness. The upstream source is fetched at build
+# time; no PdfCraft source is copied into this repository.
+on:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: Upstream repository to build
+        type: string
+        default: chiranjeevi-max/pdfcraft
+      ref:
+        description: Branch, tag, or commit to build
+        type: string
+        default: fix/79-status-layers
+      craft_fonts_ref:
+        description: craft-fonts commit (empty to omit optional embedded faces)
+        type: string
+        default: 3d9ab3a132ed0eff457e424226a435a901da30d3
+      release_tag:
+        description: GitHub release tag to create or update
+        type: string
+        default: debian-ubuntu
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      UPSTREAM: ${{ inputs.upstream || 'chiranjeevi-max/pdfcraft' }}
+      REF: ${{ inputs.ref || 'fix/79-status-layers' }}
+      CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'debian-ubuntu' }}
+      # Debian 12's glibc floor is supported by Debian 12 and Ubuntu 22.04+.
+      RUST_IMAGE: rust:1.99-bookworm
+      PDFCRAFT_BUILD_LABEL: debian
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "3"
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare working directories
+        run: mkdir -p work/cargo-home work/target work/src work/craft-fonts out
+      - name: Build inside Debian container
+        run: |
+          docker pull "$RUST_IMAGE"
+          docker run --rm \
+            --volume "$PWD:/github" \
+            --workdir /github \
+            --env UPSTREAM --env REF --env CRAFT_FONTS_REF \
+            --env PDFCRAFT_BUILD_LABEL --env CARGO_NET_GIT_FETCH_WITH_CLI \
+            --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
+            --env CARGO_HOME=/github/work/cargo-home \
+            --env CARGO_TARGET_DIR=/github/work/target \
+            "$RUST_IMAGE" sh /github/scripts/build-debian.sh
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfcraft-debian-amd64
+          path: out/*
+          if-no-files-found: error
+      - name: Publish release assets
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" out/* --clobber
+          else
+            gh release create "$RELEASE_TAG" out/* --prerelease \
+              --title "PdfCraft for Debian/Ubuntu (amd64)" \
+              --notes "Unofficial Debian/Ubuntu package built from $UPSTREAM at $REF."
+          fi
