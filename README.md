@@ -11,20 +11,35 @@ Alpine.
 
 ## What it builds
 
-By default it builds **upstream PdfCraft v0.10.1** with
+By default it builds **upstream PdfCraft** with
 [PR #2808](https://github.com/storytold/pdfcraft/pull/2808) merged on top, carried by
 the [`vinod2807/pdfcraft`](https://github.com/vinod2807/pdfcraft) branch
-`m9/79-on-v0.10.1`. That branch is a merge commit of the upstream `v0.10.1` tag and
-the PR head, so the build carries both the latest release and the fix for
+`pr79-carrier`. That branch is kept as a merge commit of the newest
+`storytold/pdfcraft` release tag and the PR head, so the build carries both the latest
+release and the fix for
 [issue #79](https://github.com/storytold/pdfcraft/issues/79): signed PDFs whose stored
 appearance says "Signature Not Verified" now get the real state drawn on the page
 (green tick and "Signature valid" once the signer is trusted), matching Adobe Acrobat.
 The saved file is never modified — only what is displayed, printed and exported.
 
 The fork branch is only a carrier for the merge; the code still comes from
-`storytold/pdfcraft` and the PR author. To move to a newer upstream release, merge its
-tag into `m9/79-on-v0.10.1` and push; the workflow follows the branch. Both workflows
-also accept `upstream` and `ref` inputs for one-off builds.
+`storytold/pdfcraft` and the PR author. Both workflows also accept `upstream` and `ref`
+inputs for one-off builds.
+
+## Automatic tracking
+
+A scheduled workflow in the fork (`track-pr79.yml`) runs every 6 hours: it resolves the
+newest upstream release tag and the head of PR #2808, merges them server-side into
+`pr79-carrier`, and updates the branch only when either moved. Once the PR is merged or
+closed, it stops merging the PR and tracks plain upstream releases instead.
+
+The two build workflows here are scheduled too (every 6 hours, offset from the tracker).
+Their `plan` job compares the carrier branch's **tree** with the tree recorded in the
+current release's `BUILD-INFO.txt` and skips the build when they match, so a new release
+appears when upstream cuts one or the PR gets new commits. Because the comparison is by
+tree, rewriting the carrier branch with an identical merge does not rebuild anything.
+Dispatch a workflow with `force: true` to rebuild the same tree, e.g. after a change to
+the build scripts.
 
 Both executables are built:
 

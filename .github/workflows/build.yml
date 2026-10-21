@@ -4,9 +4,13 @@ name: Build PdfCraft for Alpine Linux (musl)
 # publishes it as a GitHub Release. The source is fetched from the upstream
 # repository at build time; this repository holds only the build harness.
 #
-# Default target: upstream PdfCraft v0.10.1 with PR #2808 merged on top, carried by
-# vinod2807/pdfcraft branch m9/79-on-v0.10.1. The PR fixes issue #79 ("Signature Not
-# Verified" appearance not updating).
+# Default target: the pr79-carrier branch of vinod2807/pdfcraft. A scheduled
+# workflow (.github/workflows/track-pr79.yml in that fork) keeps pr79-carrier as a
+# merge of the newest storytold/pdfcraft release tag and the head of PR #2808. A
+# scheduled run here builds only when the carrier branch's tree differs from the
+# tree recorded in the current release's BUILD-INFO.txt, so a new release appears
+# when upstream cuts one or the PR gets new commits. Use the force input to rebuild
+# the same tree (e.g. after a harness change).
 
 on:
   workflow_dispatch:
@@ -18,7 +22,7 @@ on:
       ref:
         description: Branch name or commit SHA to build
         type: string
-        default: m9/79-on-v0.10.1
+        default: pr79-carrier
       craft_fonts_ref:
         description: storytold/craft-fonts commit to embed (empty to skip)
         type: string
@@ -27,8 +31,14 @@ on:
         description: Release tag to publish the binaries to
         type: string
         default: pr79-alpine
+      force:
+        description: Build even when the source tree was already built
+        type: boolean
+        default: false
   push:
     branches: [main]
+  schedule:
+    - cron: '43 */6 * * *'
 
 permissions:
   contents: write
@@ -38,12 +48,49 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      upstream: ${{ steps.decide.outputs.upstream }}
+      ref: ${{ steps.decide.outputs.ref }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_INPUT: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
+      REF_INPUT: ${{ inputs.ref || 'pr79-carrier' }}
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'pr79-alpine' }}
+      FORCE_INPUT: ${{ inputs.force || 'false' }}
+    steps:
+      - name: Decide whether this tree was already built
+        id: decide
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$UPSTREAM_INPUT/git/ref/heads/$REF_INPUT" --jq .object.sha 2>/dev/null \
+                 || gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)
+          tree=$(gh api "repos/$UPSTREAM_INPUT/commits/$head" --jq .commit.tree.sha)
+          built_tree=""
+          if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
+            built_tree=$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)
+          fi
+          build=true
+          if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ] && [ "$FORCE_INPUT" != "true" ]; then
+            build=false
+          fi
+          echo "carrier head=$head tree=$tree built_tree=$built_tree build=$build"
+          {
+            echo "build=$build"
+            echo "upstream=$UPSTREAM_INPUT"
+            echo "ref=$REF_INPUT"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      UPSTREAM: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
-      REF: ${{ inputs.ref || 'm9/79-on-v0.10.1' }}
+      UPSTREAM: ${{ needs.plan.outputs.upstream }}
+      REF: ${{ needs.plan.outputs.ref }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'pr79-alpine' }}
       # Pinned so a surprise rust:alpine bump cannot silently change the build.

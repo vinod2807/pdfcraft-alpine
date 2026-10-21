@@ -33,6 +33,14 @@ git config --global --add safe.directory "$SRC"
 git -C "$SRC" fetch --depth 1 -q origin "$REF"
 git -C "$SRC" checkout -q FETCH_HEAD
 
+VERSION="$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' "$SRC/Cargo.toml")"
+[ -n "$VERSION" ] || { echo "error: could not read the version from Cargo.toml" >&2; exit 1; }
+UPSTREAM_SHA="$(git -C "$SRC" rev-parse HEAD)"
+# The tree identifies the built content across merges: the carrier branch gets a new
+# commit each time it is rewritten, even when the merged result is unchanged.
+UPSTREAM_TREE="$(git -C "$SRC" rev-parse 'HEAD^{tree}')"
+echo "building PdfCraft $VERSION from $UPSTREAM @ $REF ($UPSTREAM_SHA)"
+
 if [ -n "$CRAFT_FONTS_REF" ]; then
   CRAFT_FONTS_DIR="$WORK/craft-fonts"
   git clone --depth 1 "https://github.com/storytold/craft-fonts.git" "$CRAFT_FONTS_DIR"
@@ -58,4 +66,16 @@ dpkg-deb --info "$DEB"
 dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft$'
 dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft-cli$'
 (cd "$OUT" && sha256sum "$(basename "$DEB")" > SHA256SUMS)
+
+{
+  echo "PdfCraft $VERSION — unofficial Debian/Ubuntu (amd64) build"
+  echo
+  echo "upstream : https://github.com/$UPSTREAM"
+  echo "ref      : $REF"
+  echo "commit   : $UPSTREAM_SHA"
+  echo "tree     : $UPSTREAM_TREE"
+  echo "built on : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "label    : $BUILD_LABEL"
+} > "$OUT/BUILD-INFO.txt"
+
 ls -lh "$OUT"

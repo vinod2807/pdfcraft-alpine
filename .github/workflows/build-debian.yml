@@ -2,6 +2,12 @@ name: Build PdfCraft for Debian and Ubuntu
 
 # This repository is a build harness. The upstream source is fetched at build
 # time; no PdfCraft source is copied into this repository.
+#
+# Default target: the pr79-carrier branch of vinod2807/pdfcraft, kept by a scheduled
+# workflow in that fork as a merge of the newest storytold/pdfcraft release tag and
+# the head of PR #2808. A scheduled run here builds only when the carrier branch's
+# tree differs from the tree recorded in the current release's BUILD-INFO.txt.
+
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +18,7 @@ on:
       ref:
         description: Branch, tag, or commit to build
         type: string
-        default: m9/79-on-v0.10.1
+        default: pr79-carrier
       craft_fonts_ref:
         description: craft-fonts commit (empty to omit optional embedded faces)
         type: string
@@ -21,21 +27,64 @@ on:
         description: GitHub release tag to create or update
         type: string
         default: debian-ubuntu
+      force:
+        description: Build even when the source tree was already built
+        type: boolean
+        default: false
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: '53 */6 * * *'
 
 permissions:
   contents: write
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      upstream: ${{ steps.decide.outputs.upstream }}
+      ref: ${{ steps.decide.outputs.ref }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_INPUT: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
+      REF_INPUT: ${{ inputs.ref || 'pr79-carrier' }}
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'debian-ubuntu' }}
+      FORCE_INPUT: ${{ inputs.force || 'false' }}
+    steps:
+      - name: Decide whether this tree was already built
+        id: decide
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$UPSTREAM_INPUT/git/ref/heads/$REF_INPUT" --jq .object.sha 2>/dev/null \
+                 || gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)
+          tree=$(gh api "repos/$UPSTREAM_INPUT/commits/$head" --jq .commit.tree.sha)
+          built_tree=""
+          if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
+            built_tree=$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)
+          fi
+          build=true
+          if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ] && [ "$FORCE_INPUT" != "true" ]; then
+            build=false
+          fi
+          echo "carrier head=$head tree=$tree built_tree=$built_tree build=$build"
+          {
+            echo "build=$build"
+            echo "upstream=$UPSTREAM_INPUT"
+            echo "ref=$REF_INPUT"
+          } >> "$GITHUB_OUTPUT"
+
   build:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      UPSTREAM: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
-      REF: ${{ inputs.ref || 'm9/79-on-v0.10.1' }}
+      UPSTREAM: ${{ needs.plan.outputs.upstream }}
+      REF: ${{ needs.plan.outputs.ref }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'debian-ubuntu' }}
       # Debian 12's glibc floor is supported by Debian 12 and Ubuntu 22.04+.
