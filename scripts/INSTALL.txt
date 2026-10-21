@@ -18,9 +18,10 @@ THIS ARCHIVE
 
 INSTALL
 -------
+  # The tarball holds usr/ at its root, so this drops the tree straight into /:
   sudo tar -xzf pdfcraft-<version>-alpine-x86_64.tar.gz -C /
-  # or, if you unpacked the tarball somewhere else:
-  sudo cp -a pdfcraft-<version>-alpine-x86_64/usr /
+  # or, if you unpacked it somewhere else:
+  sudo cp -a usr /
   sudo update-desktop-database 2>/dev/null || true
   sudo update-mime-database /usr/share/mime 2>/dev/null || true
 

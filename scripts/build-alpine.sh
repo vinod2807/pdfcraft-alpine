@@ -188,7 +188,7 @@ cp /github/scripts/INSTALL.txt "$ROOT/INSTALL.txt"
 echo "=== packaging ==="
 cp "$ROOT/usr/bin/pdfcraft" "$OUT/pdfcraft-$VERSION-alpine-x86_64"
 cp "$ROOT/usr/bin/pdfcraft-cli" "$OUT/pdfcraft-cli-$VERSION-alpine-x86_64"
-tar -C "$STAGE" -czf "$OUT/$PKG.tar.gz" "$PKG"
+tar -C "$ROOT" -czf "$OUT/$PKG.tar.gz" usr BUILD-INFO.txt INSTALL.txt
 
 # ---------------------------------------------------------------------------
 # The .apk is gzip(control tar) immediately followed by gzip(data tar).

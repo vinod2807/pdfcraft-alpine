@@ -163,8 +163,9 @@ jobs:
           set -e
           tgz="$(ls out/*.tar.gz)"
           echo "checking $tgz"
-          tar -tzf "$tgz" | grep -q '/usr/bin/pdfcraft$' || { echo "::error::the tarball has no pdfcraft binary"; exit 1; }
-          tar -tzf "$tgz" | grep -q '/usr/bin/pdfcraft-cli$' || { echo "::error::the tarball has no pdfcraft-cli binary"; exit 1; }
+          tar -tzf "$tgz" | grep -qE '(^|/)usr/bin/pdfcraft$' || { echo "::error::the tarball has no pdfcraft binary"; exit 1; }
+          tar -tzf "$tgz" | grep -qE '(^|/)usr/bin/pdfcraft-cli$' || { echo "::error::the tarball has no pdfcraft-cli binary"; exit 1; }
+          tar -tzf "$tgz" | grep -q '^BUILD-INFO.txt$' || { echo "::error::the tarball has no BUILD-INFO.txt"; exit 1; }
           tar -tzf "$tgz" | grep -q 'text-recognition.rten' || echo "::warning::the OCR models are missing from the tarball (Scan & OCR will be unavailable)"
 
       - name: Verify the .apk
