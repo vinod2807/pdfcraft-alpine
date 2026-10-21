@@ -11,12 +11,20 @@ Alpine.
 
 ## What it builds
 
-By default it builds [PR #2808](https://github.com/storytold/pdfcraft/pull/2808)
-(`chiranjeevi-max/pdfcraft` branch `fix/79-status-layers`), the fix for
+By default it builds **upstream PdfCraft v0.10.1** with
+[PR #2808](https://github.com/storytold/pdfcraft/pull/2808) merged on top, carried by
+the [`vinod2807/pdfcraft`](https://github.com/vinod2807/pdfcraft) branch
+`m9/79-on-v0.10.1`. That branch is a merge commit of the upstream `v0.10.1` tag and
+the PR head, so the build carries both the latest release and the fix for
 [issue #79](https://github.com/storytold/pdfcraft/issues/79): signed PDFs whose stored
 appearance says "Signature Not Verified" now get the real state drawn on the page
 (green tick and "Signature valid" once the signer is trusted), matching Adobe Acrobat.
 The saved file is never modified — only what is displayed, printed and exported.
+
+The fork branch is only a carrier for the merge; the code still comes from
+`storytold/pdfcraft` and the PR author. To move to a newer upstream release, merge its
+tag into `m9/79-on-v0.10.1` and push; the workflow follows the branch. Both workflows
+also accept `upstream` and `ref` inputs for one-off builds.
 
 Both executables are built:
 
@@ -77,8 +85,9 @@ default, but musl's `dlopen()` refuses to load libraries from a static binary
 `dlopen` — a static build starts the CLI but never opens a window. musl itself is part
 of every Alpine; only the libraries listed above need installing.
 
-Verified on Alpine 3.24 (x86_64): `pdfcraft-cli` reports `pdfcraft-cli 0.8.0 (alpine)`,
-the CLI parses/text-extracts/renders a real PDF, and the GUI opens on an X11 session.
+Verified on Alpine 3.24 (x86_64): `pdfcraft-cli` reports the upstream version with its
+`(alpine)` label (`0.10.1` for the current build), the CLI parses/text-extracts/renders
+a real PDF, and the GUI opens on an X11 session.
 (An earlier static build of this harness could not start the GUI at all — see the
 `crt-static` note in `scripts/build-alpine.sh`.)
 

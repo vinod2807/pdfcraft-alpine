@@ -8,11 +8,11 @@ on:
       upstream:
         description: Upstream repository to build
         type: string
-        default: chiranjeevi-max/pdfcraft
+        default: vinod2807/pdfcraft
       ref:
         description: Branch, tag, or commit to build
         type: string
-        default: fix/79-status-layers
+        default: m9/79-on-v0.10.1
       craft_fonts_ref:
         description: craft-fonts commit (empty to omit optional embedded faces)
         type: string
@@ -34,8 +34,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      UPSTREAM: ${{ inputs.upstream || 'chiranjeevi-max/pdfcraft' }}
-      REF: ${{ inputs.ref || 'fix/79-status-layers' }}
+      UPSTREAM: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
+      REF: ${{ inputs.ref || 'm9/79-on-v0.10.1' }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'debian-ubuntu' }}
       # Debian 12's glibc floor is supported by Debian 12 and Ubuntu 22.04+.

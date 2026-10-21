@@ -4,8 +4,9 @@ name: Build PdfCraft for Alpine Linux (musl)
 # publishes it as a GitHub Release. The source is fetched from the upstream
 # repository at build time; this repository holds only the build harness.
 #
-# Default target: storytold/pdfcraft PR #2808 (branch fix/79-status-layers),
-# which fixes issue #79 ("Signature Not Verified" appearance not updating).
+# Default target: upstream PdfCraft v0.10.1 with PR #2808 merged on top, carried by
+# vinod2807/pdfcraft branch m9/79-on-v0.10.1. The PR fixes issue #79 ("Signature Not
+# Verified" appearance not updating).
 
 on:
   workflow_dispatch:
@@ -13,11 +14,11 @@ on:
       upstream:
         description: Upstream repository (owner/name) that carries the fix
         type: string
-        default: chiranjeevi-max/pdfcraft
+        default: vinod2807/pdfcraft
       ref:
         description: Branch name or commit SHA to build
         type: string
-        default: fix/79-status-layers
+        default: m9/79-on-v0.10.1
       craft_fonts_ref:
         description: storytold/craft-fonts commit to embed (empty to skip)
         type: string
@@ -41,8 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      UPSTREAM: ${{ inputs.upstream || 'chiranjeevi-max/pdfcraft' }}
-      REF: ${{ inputs.ref || 'fix/79-status-layers' }}
+      UPSTREAM: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
+      REF: ${{ inputs.ref || 'm9/79-on-v0.10.1' }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'pr79-alpine' }}
       # Pinned so a surprise rust:alpine bump cannot silently change the build.
@@ -152,7 +153,7 @@ jobs:
             gh release upload "$tag" out/* --clobber
           else
             gh release create "$tag" out/* \
-              --title "PdfCraft for Alpine Linux (musl) — build of PR #2808" \
+              --title "PdfCraft for Alpine Linux (musl) — upstream release + PR #2808" \
               --notes-file .github/release-notes.md \
               --prerelease
           fi

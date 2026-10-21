@@ -4,7 +4,12 @@ PdfCraft for Alpine Linux (musl) — unofficial build
 Unofficial musl build of PdfCraft for Alpine Linux (x86_64), compiled in an
 Alpine container from upstream source at a pinned commit.
 
-This build targets PdfCraft pull request #2808 (issue #79): a signature widget
+This build is **upstream PdfCraft v0.10.1** with pull request #2808 (issue #79)
+merged on top, carried by the `vinod2807/pdfcraft` branch `m9/79-on-v0.10.1` and
+built from its exact commit. Upstream code is `storytold/pdfcraft`; the fix is by
+@chiranjeevi-max.
+
+With PR #2808, a signature widget
 whose stored appearance says "Signature Not Verified" now draws its real
 validation state on the page — a green tick and "Signature valid" once the
 signer is trusted — instead of the baked-in yellow "?" image. Display, print and
