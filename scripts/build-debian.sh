@@ -5,6 +5,9 @@ set -eu
 
 UPSTREAM="${UPSTREAM:-storytold/pdfcraft}"
 REF="${REF:-main}"
+TRACK_UPSTREAM_PR="${TRACK_UPSTREAM_PR:-false}"
+BASE_REPO="${BASE_REPO:-storytold/pdfcraft}"
+PR_NUMBER="${PR_NUMBER:-2808}"
 CRAFT_FONTS_REF="${CRAFT_FONTS_REF:-}"
 BUILD_LABEL="${PDFCRAFT_BUILD_LABEL:-debian}"
 WORK=/github/work
@@ -14,7 +17,7 @@ OUT=/github/out
 echo "=== installing build dependencies ==="
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  ca-certificates curl git build-essential cmake pkg-config \
+  ca-certificates curl jq git build-essential cmake pkg-config \
   libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev \
   libxcursor-dev libegl1-mesa-dev libvulkan-dev
 rm -rf /var/lib/apt/lists/*
@@ -28,10 +31,36 @@ mkdir -p "$WORK" "$OUT"
 rm -rf "$SRC"
 mkdir -p "$SRC"
 git -C "$SRC" init -q
-git -C "$SRC" remote add origin "https://github.com/$UPSTREAM.git"
 git config --global --add safe.directory "$SRC"
-git -C "$SRC" fetch --depth 1 -q origin "$REF"
-git -C "$SRC" checkout -q FETCH_HEAD
+if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
+  RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
+  PR_JSON="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
+  PR_STATE="$(jq -r .state <<<"$PR_JSON")"
+  PR_MERGED="$(jq -r .merged <<<"$PR_JSON")"
+  PR_SHA="$(jq -r .head.sha <<<"$PR_JSON")"
+  PR_REPO="$(jq -r .head.repo.clone_url <<<"$PR_JSON")"
+  PR_REF="$(jq -r .head.ref <<<"$PR_JSON")"
+  echo "release: $BASE_REPO@$RELEASE_TAG"
+  echo "PR #$PR_NUMBER: state=$PR_STATE merged=$PR_MERGED head=$PR_SHA"
+  git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
+  git -C "$SRC" fetch --depth 1 -q release "refs/tags/$RELEASE_TAG"
+  BASE_SHA="$(git -C "$SRC" rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+  git -C "$SRC" checkout -q --detach "$BASE_SHA"
+  if [ "$PR_STATE" = "open" ] && [ "$PR_MERGED" = "false" ]; then
+    git -C "$SRC" fetch --depth 1 -q "$PR_REPO" "refs/heads/$PR_REF"
+    git -C "$SRC" merge --no-ff -X theirs -q "$PR_SHA" \
+      -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($(cut -c1-8 <<<"$PR_SHA"))"
+    SOURCE_REF="$RELEASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
+  else
+    SOURCE_REF="$RELEASE_TAG"
+  fi
+  UPSTREAM="$BASE_REPO"
+else
+  git -C "$SRC" remote add origin "https://github.com/$UPSTREAM.git"
+  git -C "$SRC" fetch --depth 1 -q origin "$REF"
+  git -C "$SRC" checkout -q FETCH_HEAD
+  SOURCE_REF="$REF"
+fi
 
 VERSION="$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' "$SRC/Cargo.toml")"
 [ -n "$VERSION" ] || { echo "error: could not read the version from Cargo.toml" >&2; exit 1; }
@@ -39,7 +68,7 @@ UPSTREAM_SHA="$(git -C "$SRC" rev-parse HEAD)"
 # The tree identifies the built content across merges: the carrier branch gets a new
 # commit each time it is rewritten, even when the merged result is unchanged.
 UPSTREAM_TREE="$(git -C "$SRC" rev-parse 'HEAD^{tree}')"
-echo "building PdfCraft $VERSION from $UPSTREAM @ $REF ($UPSTREAM_SHA)"
+echo "building PdfCraft $VERSION from $UPSTREAM @ $SOURCE_REF ($UPSTREAM_SHA)"
 
 if [ -n "$CRAFT_FONTS_REF" ]; then
   CRAFT_FONTS_DIR="$WORK/craft-fonts"
@@ -55,7 +84,7 @@ export DIST="$OUT"
 export CARGO_TARGET_DIR="$WORK/target"
 mkdir -p "$CARGO_TARGET_DIR"
 
-echo "=== building Debian package for $UPSTREAM @ $REF ==="
+echo "=== building Debian package for $UPSTREAM @ $SOURCE_REF ==="
 cd "$SRC"
 packaging/linux/package.sh --formats deb
 
@@ -71,7 +100,7 @@ dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft-cli$'
   echo "PdfCraft $VERSION — unofficial Debian/Ubuntu (amd64) build"
   echo
   echo "upstream : https://github.com/$UPSTREAM"
-  echo "ref      : $REF"
+  echo "ref      : $SOURCE_REF"
   echo "commit   : $UPSTREAM_SHA"
   echo "tree     : $UPSTREAM_TREE"
   echo "built on : $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -5,6 +5,9 @@
 # Environment (set by the workflow):
 #   UPSTREAM          owner/name of the upstream repository to build
 #   REF               branch name or commit SHA to build
+#   TRACK_UPSTREAM_PR build latest BASE_REPO release plus PR_NUMBER when true
+#   BASE_REPO         upstream repository whose latest release is used
+#   PR_NUMBER         pull request to merge into the latest release
 #   CRAFT_FONTS_REF   optional storytold/craft-fonts commit (empty to skip)
 #   PDFCRAFT_BUILD_LABEL  build label compiled into `--version`
 #   CARGO_HOME, CARGO_TARGET_DIR  point at bind mounts on the host (for caching)
@@ -12,6 +15,9 @@ set -eu
 
 UPSTREAM="${UPSTREAM:?UPSTREAM is required}"
 REF="${REF:?REF is required}"
+TRACK_UPSTREAM_PR="${TRACK_UPSTREAM_PR:-false}"
+BASE_REPO="${BASE_REPO:-storytold/pdfcraft}"
+PR_NUMBER="${PR_NUMBER:-2808}"
 CRAFT_FONTS_REF="${CRAFT_FONTS_REF:-}"
 
 WORK=/github/work
@@ -30,42 +36,55 @@ echo "=== installing build dependencies ==="
 # gzip   : GNU gzip, for reproducible -n -9 streams
 # abuild : only for abuild-tar, the filter that builds the .apk control/data streams
 apk add --no-cache \
-  build-base binutils cmake perl pkgconf git ca-certificates curl \
+  build-base binutils cmake perl pkgconf git ca-certificates curl jq \
   tar gzip abuild \
   linux-headers \
   wayland-dev wayland-protocols libxkbcommon-dev \
   libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
   mesa-dev
 
-echo "=== fetching $UPSTREAM @ $REF ==="
-# Reuse a cached checkout when possible: a fresh clone gives every source file a
-# new mtime, which makes cargo rebuild the whole graph and throws the target
-# cache away. Reusing it keeps mtimes stable, so only real changes recompile.
-EXPECTED_REMOTE="https://github.com/${UPSTREAM}.git"
-if [ -d "$SRC/.git" ] && [ "$(git -C "$SRC" remote get-url origin 2>/dev/null || true)" = "$EXPECTED_REMOTE" ]; then
-  echo "reusing the cached checkout"
+echo "=== fetching source ==="
+rm -rf "$SRC"
+mkdir -p "$SRC"
+git init -q "$SRC"
+git config --global --add safe.directory "$SRC"
+if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
+  RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
+  PR_JSON="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
+  PR_STATE="$(jq -r .state <<<"$PR_JSON")"
+  PR_MERGED="$(jq -r .merged <<<"$PR_JSON")"
+  PR_SHA="$(jq -r .head.sha <<<"$PR_JSON")"
+  PR_REPO="$(jq -r .head.repo.clone_url <<<"$PR_JSON")"
+  PR_REF="$(jq -r .head.ref <<<"$PR_JSON")"
+  echo "release: $BASE_REPO@$RELEASE_TAG"
+  echo "PR #$PR_NUMBER: state=$PR_STATE merged=$PR_MERGED head=$PR_SHA"
+  git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
+  git -C "$SRC" fetch --depth 1 -q release "refs/tags/$RELEASE_TAG"
+  BASE_SHA="$(git -C "$SRC" rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+  git -C "$SRC" checkout -q --detach "$BASE_SHA"
+  if [ "$PR_STATE" = "open" ] && [ "$PR_MERGED" = "false" ]; then
+    git -C "$SRC" fetch --depth 1 -q "$PR_REPO" "refs/heads/$PR_REF"
+    git -C "$SRC" merge --no-ff -X theirs -q "$PR_SHA" \
+      -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($(cut -c1-8 <<<"$PR_SHA"))"
+    SOURCE_REF="$RELEASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
+  else
+    SOURCE_REF="$RELEASE_TAG"
+  fi
+  UPSTREAM="$BASE_REPO"
 else
-  rm -rf "$SRC"
-  mkdir -p "$SRC"
-  git init -q "$SRC"
+  EXPECTED_REMOTE="https://github.com/${UPSTREAM}.git"
   git -C "$SRC" remote add origin "$EXPECTED_REMOTE"
-fi
-if ! git -C "$SRC" fetch --depth 1 -q origin "$REF"; then
-  echo "ERROR: could not fetch '$REF' from $UPSTREAM" >&2
-  exit 1
-fi
-git -C "$SRC" checkout -q FETCH_HEAD
-if [ -n "$(git -C "$SRC" status --porcelain)" ]; then
-  echo "WARNING: the cached checkout was dirty; resetting it" >&2
-  git -C "$SRC" reset -q --hard FETCH_HEAD
-  git -C "$SRC" clean -qfd
+  if ! git -C "$SRC" fetch --depth 1 -q origin "$REF"; then
+    echo "ERROR: could not fetch '$REF' from $UPSTREAM" >&2
+    exit 1
+  fi
+  git -C "$SRC" checkout -q FETCH_HEAD
+  SOURCE_REF="$REF"
 fi
 UPSTREAM_SHA="$(git -C "$SRC" rev-parse HEAD)"
-# The tree identifies the built content across merges: the carrier branch gets a new
-# commit each time it is rewritten, even when the merged result is unchanged.
 UPSTREAM_TREE="$(git -C "$SRC" rev-parse 'HEAD^{tree}')"
-echo "upstream commit: $UPSTREAM_SHA"
-echo "upstream tree:   $UPSTREAM_TREE"
+echo "source commit: $UPSTREAM_SHA"
+echo "source tree:   $UPSTREAM_TREE"
 
 # Optional craft-fonts build input (public repo): embeds Japanese/Arabic faces.
 if [ -n "$CRAFT_FONTS_REF" ]; then
@@ -162,7 +181,7 @@ mkdir -p "$OUT"
   echo "PdfCraft $VERSION — unofficial Alpine Linux (musl) build"
   echo
   echo "upstream : https://github.com/$UPSTREAM"
-  echo "ref      : $REF"
+  echo "ref      : $SOURCE_REF"
   echo "commit   : $UPSTREAM_SHA"
   echo "tree     : $UPSTREAM_TREE"
   echo "built on : $(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -3,10 +3,8 @@ name: Build PdfCraft for Debian and Ubuntu
 # This repository is a build harness. The upstream source is fetched at build
 # time; no PdfCraft source is copied into this repository.
 #
-# Default target: the pr79-carrier branch of vinod2807/pdfcraft, kept by a scheduled
-# workflow in that fork as a merge of the newest storytold/pdfcraft release tag and
-# the head of PR #2808. A scheduled run here builds only when the carrier branch's
-# tree differs from the tree recorded in the current release's BUILD-INFO.txt.
+# Default target: the latest storytold/pdfcraft release merged with the current
+# head of PR #2808. The merge is performed in the build container.
 
 on:
   workflow_dispatch:
@@ -14,11 +12,15 @@ on:
       upstream:
         description: Upstream repository to build
         type: string
-        default: vinod2807/pdfcraft
+        default: storytold/pdfcraft
       ref:
         description: Branch, tag, or commit to build
         type: string
-        default: pr79-carrier
+        default: main
+      track_upstream_pr:
+        description: Build the latest upstream release plus PR #2808
+        type: boolean
+        default: true
       craft_fonts_ref:
         description: craft-fonts commit (empty to omit optional embedded faces)
         type: string
@@ -51,8 +53,8 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
-      UPSTREAM_INPUT: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
-      REF_INPUT: ${{ inputs.ref || 'pr79-carrier' }}
+      UPSTREAM_INPUT: ${{ inputs.upstream || 'storytold/pdfcraft' }}
+      REF_INPUT: ${{ inputs.ref || 'main' }}
       RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'debian-ubuntu' }}
       FORCE_INPUT: ${{ inputs.force || 'false' }}
     steps:
@@ -60,18 +62,8 @@ jobs:
         id: decide
         run: |
           set -euo pipefail
-          head=$(gh api "repos/$UPSTREAM_INPUT/git/ref/heads/$REF_INPUT" --jq .object.sha 2>/dev/null \
-                 || gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)
-          tree=$(gh api "repos/$UPSTREAM_INPUT/commits/$head" --jq .commit.tree.sha)
-          built_tree=""
-          if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
-            built_tree=$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)
-          fi
+          echo "direct source resolution; build=true"
           build=true
-          if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ] && [ "$FORCE_INPUT" != "true" ]; then
-            build=false
-          fi
-          echo "carrier head=$head tree=$tree built_tree=$built_tree build=$build"
           {
             echo "build=$build"
             echo "upstream=$UPSTREAM_INPUT"
@@ -84,8 +76,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      UPSTREAM: ${{ needs.plan.outputs.upstream }}
-      REF: ${{ needs.plan.outputs.ref }}
+      UPSTREAM: ${{ inputs.upstream || 'storytold/pdfcraft' }}
+      REF: ${{ inputs.ref || 'main' }}
+      TRACK_UPSTREAM_PR: "true"
+      BASE_REPO: storytold/pdfcraft
+      PR_NUMBER: "2808"
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'debian-ubuntu' }}
       # Debian 12's glibc floor is supported by Debian 12 and Ubuntu 22.04+.
@@ -105,7 +100,8 @@ jobs:
           docker run --rm \
             --volume "$PWD:/github" \
             --workdir /github \
-            --env UPSTREAM --env REF --env CRAFT_FONTS_REF \
+            --env UPSTREAM --env REF --env TRACK_UPSTREAM_PR --env BASE_REPO --env PR_NUMBER \
+            --env CRAFT_FONTS_REF \
             --env PDFCRAFT_BUILD_LABEL --env CARGO_NET_GIT_FETCH_WITH_CLI \
             --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
             --env CARGO_HOME=/github/work/cargo-home \

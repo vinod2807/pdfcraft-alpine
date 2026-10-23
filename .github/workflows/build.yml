@@ -4,13 +4,9 @@ name: Build PdfCraft for Alpine Linux (musl)
 # publishes it as a GitHub Release. The source is fetched from the upstream
 # repository at build time; this repository holds only the build harness.
 #
-# Default target: the pr79-carrier branch of vinod2807/pdfcraft. A scheduled
-# workflow (.github/workflows/track-pr79.yml in that fork) keeps pr79-carrier as a
-# merge of the newest storytold/pdfcraft release tag and the head of PR #2808. A
-# scheduled run here builds only when the carrier branch's tree differs from the
-# tree recorded in the current release's BUILD-INFO.txt, so a new release appears
-# when upstream cuts one or the PR gets new commits. Use the force input to rebuild
-# the same tree (e.g. after a harness change).
+# Default target: the latest storytold/pdfcraft release merged with the current
+# head of PR #2808. The merge is performed in the build container, so this
+# workflow does not depend on a tracking branch in a fork.
 
 on:
   workflow_dispatch:
@@ -18,11 +14,15 @@ on:
       upstream:
         description: Upstream repository (owner/name) that carries the fix
         type: string
-        default: vinod2807/pdfcraft
+        default: storytold/pdfcraft
       ref:
         description: Branch name or commit SHA to build
         type: string
-        default: pr79-carrier
+        default: main
+      track_upstream_pr:
+        description: Build the latest upstream release plus PR #2808
+        type: boolean
+        default: true
       craft_fonts_ref:
         description: storytold/craft-fonts commit to embed (empty to skip)
         type: string
@@ -57,8 +57,8 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
-      UPSTREAM_INPUT: ${{ inputs.upstream || 'vinod2807/pdfcraft' }}
-      REF_INPUT: ${{ inputs.ref || 'pr79-carrier' }}
+      UPSTREAM_INPUT: ${{ inputs.upstream || 'storytold/pdfcraft' }}
+      REF_INPUT: ${{ inputs.ref || 'main' }}
       RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'pr79-alpine' }}
       FORCE_INPUT: ${{ inputs.force || 'false' }}
     steps:
@@ -66,18 +66,8 @@ jobs:
         id: decide
         run: |
           set -euo pipefail
-          head=$(gh api "repos/$UPSTREAM_INPUT/git/ref/heads/$REF_INPUT" --jq .object.sha 2>/dev/null \
-                 || gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)
-          tree=$(gh api "repos/$UPSTREAM_INPUT/commits/$head" --jq .commit.tree.sha)
-          built_tree=""
-          if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
-            built_tree=$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)
-          fi
+          echo "direct source resolution; build=true"
           build=true
-          if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ] && [ "$FORCE_INPUT" != "true" ]; then
-            build=false
-          fi
-          echo "carrier head=$head tree=$tree built_tree=$built_tree build=$build"
           {
             echo "build=$build"
             echo "upstream=$UPSTREAM_INPUT"
@@ -90,8 +80,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 355
     env:
-      UPSTREAM: ${{ needs.plan.outputs.upstream }}
-      REF: ${{ needs.plan.outputs.ref }}
+      UPSTREAM: ${{ inputs.upstream || 'storytold/pdfcraft' }}
+      REF: ${{ inputs.ref || 'main' }}
+      TRACK_UPSTREAM_PR: "true"
+      BASE_REPO: storytold/pdfcraft
+      PR_NUMBER: "2808"
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'pr79-alpine' }}
       # Pinned so a surprise rust:alpine bump cannot silently change the build.
@@ -137,7 +130,8 @@ jobs:
           docker run --rm \
             --volume "$PWD:/github" \
             --workdir /github \
-            --env UPSTREAM --env REF --env CRAFT_FONTS_REF --env PDFCRAFT_BUILD_LABEL \
+            --env UPSTREAM --env REF --env TRACK_UPSTREAM_PR --env BASE_REPO --env PR_NUMBER \
+            --env CRAFT_FONTS_REF --env PDFCRAFT_BUILD_LABEL \
             --env CARGO_HOME=/github/work/cargo-home \
             --env CARGO_TARGET_DIR=/github/work/target \
             --env CARGO_NET_GIT_FETCH_WITH_CLI --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
