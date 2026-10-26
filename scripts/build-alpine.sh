@@ -48,6 +48,8 @@ rm -rf "$SRC"
 mkdir -p "$SRC"
 git init -q "$SRC"
 git config --global --add safe.directory "$SRC"
+git -C "$SRC" config user.name "PdfCraft build bot"
+git -C "$SRC" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
   PR_JSON="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
