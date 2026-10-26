@@ -116,6 +116,9 @@ VERSION="$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg &&
 [ -n "$VERSION" ] || { echo "ERROR: could not read the version from Cargo.toml" >&2; exit 1; }
 echo "version: $VERSION"
 
+echo "=== refreshing Cargo.lock for merged upstream/PR source ==="
+cargo generate-lockfile
+
 echo "=== cargo build (release, musl) ==="
 # Rust's *-linux-musl targets link statically by default, but musl's dlopen()
 # refuses to load libraries from a static binary ("Dynamic loading not
