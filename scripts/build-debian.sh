@@ -45,7 +45,7 @@ if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   echo "PR #$PR_NUMBER: state=$PR_STATE merged=$PR_MERGED head=$PR_SHA"
   git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
   git -C "$SRC" fetch --no-tags -q release "refs/tags/$RELEASE_TAG"
-  BASE_SHA="$(git -C "$SRC" rev-list -n 1 "refs/tags/$RELEASE_TAG")"
+  BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
   git -C "$SRC" checkout -q --detach "$BASE_SHA"
   if [ "$PR_STATE" = "open" ] && [ "$PR_MERGED" = "false" ]; then
     git -C "$SRC" fetch --no-tags -q "$PR_REPO" "refs/heads/$PR_REF"
