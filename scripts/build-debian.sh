@@ -35,11 +35,12 @@ git config --global --add safe.directory "$SRC"
 if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
   PR_JSON="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
-  PR_STATE="$(jq -r .state <<<"$PR_JSON")"
-  PR_MERGED="$(jq -r .merged <<<"$PR_JSON")"
-  PR_SHA="$(jq -r .head.sha <<<"$PR_JSON")"
-  PR_REPO="$(jq -r .head.repo.clone_url <<<"$PR_JSON")"
-  PR_REF="$(jq -r .head.ref <<<"$PR_JSON")"
+  PR_STATE="$(printf '%s\n' "$PR_JSON" | jq -r .state)"
+  PR_MERGED="$(printf '%s\n' "$PR_JSON" | jq -r .merged)"
+  PR_SHA="$(printf '%s\n' "$PR_JSON" | jq -r .head.sha)"
+  PR_REPO="$(printf '%s\n' "$PR_JSON" | jq -r .head.repo.clone_url)"
+  PR_REF="$(printf '%s\n' "$PR_JSON" | jq -r .head.ref)"
+  PR_SHORT="$(printf '%s\n' "$PR_SHA" | cut -c1-8)"
   echo "release: $BASE_REPO@$RELEASE_TAG"
   echo "PR #$PR_NUMBER: state=$PR_STATE merged=$PR_MERGED head=$PR_SHA"
   git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
@@ -49,7 +50,7 @@ if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   if [ "$PR_STATE" = "open" ] && [ "$PR_MERGED" = "false" ]; then
     git -C "$SRC" fetch --no-tags -q "$PR_REPO" "refs/heads/$PR_REF"
     git -C "$SRC" merge --no-ff -X theirs -q "$PR_SHA" \
-      -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($(cut -c1-8 <<<"$PR_SHA"))"
+      -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($PR_SHORT)"
     SOURCE_REF="$RELEASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
   else
     SOURCE_REF="$RELEASE_TAG"
