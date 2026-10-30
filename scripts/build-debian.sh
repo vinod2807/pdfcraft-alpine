@@ -30,6 +30,86 @@ api_get() {
   fi
 }
 
+# Upstream downloads its OCR models from an S3 bucket that now answers 403
+# AccessDenied. Fetch the exact pinned files from mirrors instead, verify each
+# against the SHA-256 in ATTRIBUTION.toml, and point the manifest at the
+# verified local copies. `cargo xtask models` still checks the same hashes, so
+# a mirror cannot substitute different weights.
+prefetch_ocr_models() {
+  _src="$1"
+  _cache="$2"
+  _upstream="${3:-}"
+  _version="${4:-}"
+  mkdir -p "$_cache"
+  awk '
+    /^\[\[fetched\]\]/ { file=""; sha=""; url=""; kind=""; inblk=1; next }
+    inblk && /^file = /   { v=$0; sub(/^file = "/, "", v);   sub(/"$/, "", v); file=v }
+    inblk && /^url = /    { v=$0; sub(/^url = "/, "", v);    sub(/"$/, "", v); url=v }
+    inblk && /^sha256 = / { v=$0; sub(/^sha256 = "/, "", v); sub(/"$/, "", v); sha=v }
+    inblk && /^kind = /   { v=$0; sub(/^kind = "/, "", v);   sub(/"$/, "", v); kind=v }
+    inblk && /^$/ { if (kind == "model" && file != "" && sha != "") printf "%s\t%s\t%s\n", file, sha, url; inblk=0 }
+    END { if (inblk && kind == "model" && file != "" && sha != "") printf "%s\t%s\t%s\n", file, sha, url }
+  ' "$_src/ATTRIBUTION.toml" >"$_cache/.entries"
+  if [ ! -s "$_cache/.entries" ]; then
+    echo "error: no OCR model entries in $_src/ATTRIBUTION.toml" >&2
+    return 1
+  fi
+  while IFS="$(printf '\t')" read -r _file _sha _url; do
+    _dest="$_cache/$_file"
+    if [ -f "$_dest" ] && [ "$(sha256sum "$_dest" | cut -d' ' -f1)" = "$_sha" ]; then
+      _ok=1
+    else
+      _ok=0
+      for _u in "$_url" \
+        "https://github.com/deeplabua/deepocr/releases/download/models-v1/$_file" \
+        "https://raw.githubusercontent.com/baras-app/ocr-models/main/$_file"; do
+        echo "fetching $_file from $_u"
+        if curl -fsSL --retry 2 --max-time 300 -o "$_dest.part" "$_u"; then
+          if [ "$(sha256sum "$_dest.part" | cut -d' ' -f1)" = "$_sha" ]; then
+            mv "$_dest.part" "$_dest"
+            _ok=1
+            break
+          fi
+          echo "warning: $_u: SHA-256 mismatch, ignoring" >&2
+        fi
+        rm -f "$_dest.part"
+      done
+      if [ "$_ok" != "1" ] && [ -n "$_upstream" ] && [ -n "$_version" ]; then
+        # Last resort: the models shipped in the official release tarball for
+        # this version. It is large, so the small mirrors are tried first.
+        _tar="$WORK/pdfcraft-$_version-linux-x86_64.tar.gz"
+        _tar_dir="$WORK/release-models"
+        mkdir -p "$WORK"
+        if [ ! -f "$_tar" ]; then
+          echo "fetching the release tarball for its OCR models: $_tar"
+          curl -fsSL --retry 2 --max-time 900 -o "$_tar" \
+            "https://github.com/$_upstream/releases/download/v$_version/pdfcraft-$_version-linux-x86_64.tar.gz" \
+            || rm -f "$_tar"
+        fi
+        if [ -f "$_tar" ]; then
+          rm -rf "$_tar_dir"
+          mkdir -p "$_tar_dir"
+          if tar -xzf "$_tar" -C "$_tar_dir" "pdfcraft-$_version-linux-x86_64/share/pdfcraft/models/$_file" 2>/dev/null; then
+            _from="$_tar_dir/pdfcraft-$_version-linux-x86_64/share/pdfcraft/models/$_file"
+            if [ -f "$_from" ] && [ "$(sha256sum "$_from" | cut -d' ' -f1)" = "$_sha" ]; then
+              mv "$_from" "$_dest"
+              _ok=1
+            fi
+          fi
+        fi
+      fi
+    fi
+    if [ "$_ok" != "1" ]; then
+      echo "error: could not fetch $_file (expected SHA-256 $_sha)" >&2
+      return 1
+    fi
+    sed -i "s|^url = \".*/$_file\"$|url = \"file://$_dest\"|" "$_src/ATTRIBUTION.toml"
+  done <"$_cache/.entries"
+  rm -f "$_cache/.entries"
+  rm -rf "$WORK/release-models"
+  rm -f "$WORK/pdfcraft-$_version-linux-x86_64.tar.gz"
+}
+
 echo "=== installing build dependencies ==="
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -111,6 +191,9 @@ mkdir -p "$CARGO_TARGET_DIR"
 echo "=== refreshing Cargo.lock for merged upstream/PR source ==="
 cd "$SRC"
 cargo generate-lockfile
+
+echo "=== fetching OCR models (Scan & OCR) ==="
+prefetch_ocr_models "$SRC" "$WORK/ocr-models" "$UPSTREAM" "$VERSION"
 
 echo "=== building Debian and RPM packages for $UPSTREAM @ $SOURCE_REF ==="
 packaging/linux/package.sh --formats "deb rpm"

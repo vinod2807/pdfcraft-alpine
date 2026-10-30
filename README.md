@@ -49,6 +49,11 @@ and both executables. The same build also produces an `.rpm`, which is available
 as a workflow artifact but is deliberately not attached to the release. This
 workflow is independent of the Alpine `.apk` build.
 
+Both builds include the pinned OCR models. Upstream's model bucket currently
+returns `403 AccessDenied`, so the scripts fetch the same files from mirrors (or
+the official release tarball) and verify each against the SHA-256 in the source's
+`ATTRIBUTION.toml` before use.
+
 Install the Debian/Ubuntu asset with:
 
 ```sh
