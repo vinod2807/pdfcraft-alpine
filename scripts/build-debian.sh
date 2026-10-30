@@ -88,10 +88,10 @@ export CARGO_TARGET_DIR="$WORK/target"
 mkdir -p "$CARGO_TARGET_DIR"
 
 echo "=== refreshing Cargo.lock for merged upstream/PR source ==="
+cd "$SRC"
 cargo generate-lockfile
 
 echo "=== building Debian package for $UPSTREAM @ $SOURCE_REF ==="
-cd "$SRC"
 packaging/linux/package.sh --formats deb
 
 echo "=== verifying package ==="

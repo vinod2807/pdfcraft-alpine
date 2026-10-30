@@ -117,6 +117,7 @@ VERSION="$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg &&
 echo "version: $VERSION"
 
 echo "=== refreshing Cargo.lock for merged upstream/PR source ==="
+cd "$SRC"
 cargo generate-lockfile
 
 echo "=== cargo build (release, musl) ==="

@@ -38,7 +38,9 @@ on:
   push:
     branches: [main]
   schedule:
-    - cron: '43 */6 * * *'
+    # Weekly check: the plan job skips the build when the merged source tree
+    # matches the one recorded in the current release's BUILD-INFO.txt.
+    - cron: '43 4 * * 1'
 
 permissions:
   contents: write
@@ -59,15 +61,60 @@ jobs:
       GH_REPO: ${{ github.repository }}
       UPSTREAM_INPUT: ${{ inputs.upstream || 'storytold/pdfcraft' }}
       REF_INPUT: ${{ inputs.ref || 'main' }}
+      BASE_REPO: storytold/pdfcraft
+      PR_NUMBER: "2808"
+      TRACK_PR_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_upstream_pr) || 'true' }}
       RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'pr79-alpine' }}
-      FORCE_INPUT: ${{ inputs.force || 'false' }}
+      FORCE_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.force) || 'false' }}
     steps:
       - name: Decide whether this tree was already built
         id: decide
         run: |
           set -euo pipefail
-          echo "direct source resolution; build=true"
           build=true
+          if [ "$FORCE_INPUT" != "true" ]; then
+            if [ "$TRACK_PR_INPUT" = "true" ]; then
+              # Resolve exactly what the build job will build: the newest
+              # release tag merged with the PR head while the PR is open.
+              tag="$(gh api "repos/$BASE_REPO/releases/latest" --jq .tag_name)"
+              pr="$(gh api "repos/$BASE_REPO/pulls/$PR_NUMBER")"
+              state="$(printf '%s' "$pr" | jq -r .state)"
+              merged="$(printf '%s' "$pr" | jq -r .merged)"
+              sha="$(printf '%s' "$pr" | jq -r .head.sha)"
+              repo="$(printf '%s' "$pr" | jq -r .head.repo.clone_url)"
+              ref="$(printf '%s' "$pr" | jq -r .head.ref)"
+              work="$(mktemp -d)"
+              git -C "$work" init -q
+              git -C "$work" remote add release "https://github.com/$BASE_REPO.git"
+              # Full history: a shallow PR fetch has no common ancestor with
+              # the tag, so the merge (and its tree) would be wrong.
+              git -C "$work" fetch -q release "refs/tags/$tag"
+              git -C "$work" checkout -q --detach FETCH_HEAD
+              if [ "$state" = "open" ] && [ "$merged" = "false" ]; then
+                git -C "$work" fetch -q "$repo" "refs/heads/$ref"
+                git -C "$work" -c user.name=plan -c user.email=plan@localhost \
+                  merge --no-ff -X theirs -q "$sha" -m "plan"
+              fi
+              tree="$(git -C "$work" rev-parse 'HEAD^{tree}')"
+              rm -rf "$work"
+              echo "target: $tag + PR #$PR_NUMBER ($sha)"
+            else
+              sha="$(gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)"
+              tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$sha" --jq .commit.tree.sha)"
+              echo "target: $UPSTREAM_INPUT@$REF_INPUT ($sha)"
+            fi
+            echo "target tree: $tree"
+            built_tree=""
+            if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt \
+                 -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
+              built_tree="$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)"
+            fi
+            echo "built tree:  ${built_tree:-<none>}"
+            if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ]; then
+              build=false
+              echo "already built; skipping"
+            fi
+          fi
           {
             echo "build=$build"
             echo "upstream=$UPSTREAM_INPUT"
@@ -82,7 +129,7 @@ jobs:
     env:
       UPSTREAM: ${{ inputs.upstream || 'storytold/pdfcraft' }}
       REF: ${{ inputs.ref || 'main' }}
-      TRACK_UPSTREAM_PR: "true"
+      TRACK_UPSTREAM_PR: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_upstream_pr) || 'true' }}
       BASE_REPO: storytold/pdfcraft
       PR_NUMBER: "2808"
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
