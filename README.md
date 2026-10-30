@@ -11,28 +11,28 @@ Alpine.
 
 ## What it builds
 
-By default it builds **upstream PdfCraft** with
-[PR #2808](https://github.com/storytold/pdfcraft/pull/2808) merged on top at build time:
-the newest `storytold/pdfcraft` release tag is merged with the PR head inside the build
-container, so the build carries both the latest release and the fix for
+By default it builds the head of
+[PR #2808](https://github.com/storytold/pdfcraft/pull/2808). The PR conflicts with the
+newest `storytold/pdfcraft` release, and merging the two produces code that does not
+compile, so while the PR is open its branch is built directly; once it is merged or
+closed, the newest release tag is built instead. Either way the build carries the fix for
 [issue #79](https://github.com/storytold/pdfcraft/issues/79): signed PDFs whose stored
 appearance says "Signature Not Verified" now get the real state drawn on the page
 (green tick and "Signature valid" once the signer is trusted), matching Adobe Acrobat.
 The saved file is never modified — only what is displayed, printed and exported.
 
-The merge is only a carrier; the code still comes from `storytold/pdfcraft` and the PR
-author. Both workflows also accept `upstream` and `ref` inputs for one-off builds.
+The code still comes from `storytold/pdfcraft` and the PR author. Both workflows also
+accept `upstream` and `ref` inputs for one-off builds.
 
 ## Automatic tracking
 
 The two build workflows check once a week (Mondays, 04:43 and 04:53 UTC). Their `plan`
-job resolves what the build would produce — the newest upstream release tag merged with
-the head of PR #2808 while the PR is open, or the plain release once it is merged or
-closed — and compares the resulting source **tree** with the tree recorded in the
-current release's `BUILD-INFO.txt`. When they match, the build is skipped, so a new
-release appears only when upstream cuts one or the PR gets new commits. Because the
-comparison is by tree, an identical merge does not rebuild anything. Dispatch a workflow
-with `force: true` to rebuild the same tree, e.g. after a change to the build scripts.
+job resolves what the build would produce — the head of PR #2808 while the PR is open,
+or the newest upstream release tag once it is merged or closed — and compares the
+resulting source **tree** with the tree recorded in the current release's
+`BUILD-INFO.txt`. When they match, the build is skipped, so a new release appears only
+when upstream cuts one or the PR gets new commits. Dispatch a workflow with
+`force: true` to rebuild the same tree, e.g. after a change to the build scripts.
 
 Both executables are built:
 
@@ -45,7 +45,9 @@ The **Build PdfCraft for Debian and Ubuntu** workflow also produces an amd64
 `.deb` from glibc-based Debian 12 (and Ubuntu 22.04+) compatible binaries. It
 uses the upstream `packaging/linux/package.sh` staging and dependency metadata,
 so the package installs the desktop entry, MIME association, icons, OCR models,
-and both executables. It is independent of the Alpine `.apk` build.
+and both executables. The same build also produces an `.rpm`, which is available
+as a workflow artifact but is deliberately not attached to the release. This
+workflow is independent of the Alpine `.apk` build.
 
 Install the Debian/Ubuntu asset with:
 

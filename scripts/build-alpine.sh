@@ -5,9 +5,9 @@
 # Environment (set by the workflow):
 #   UPSTREAM          owner/name of the upstream repository to build
 #   REF               branch name or commit SHA to build
-#   TRACK_UPSTREAM_PR build latest BASE_REPO release plus PR_NUMBER when true
-#   BASE_REPO         upstream repository whose latest release is used
-#   PR_NUMBER         pull request to merge into the latest release
+#   TRACK_UPSTREAM_PR build PR_NUMBER while it is open, else the latest BASE_REPO release
+#   BASE_REPO         upstream repository whose latest release is tracked
+#   PR_NUMBER         pull request whose head is built while it is open
 #   CRAFT_FONTS_REF   optional storytold/craft-fonts commit (empty to skip)
 #   PDFCRAFT_BUILD_LABEL  build label compiled into `--version`
 #   CARGO_HOME, CARGO_TARGET_DIR  point at bind mounts on the host (for caching)
@@ -77,21 +77,22 @@ if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
     PR_REPO="$(printf '%s\n' "$PR_JSON" | jq -r .head.repo.clone_url)"
     PR_REF="$(printf '%s\n' "$PR_JSON" | jq -r .head.ref)"
   fi
-  RELEASE_TAG="$BASE_TAG"
-  PR_SHORT="$(printf '%s\n' "$PR_SHA" | cut -c1-8)"
-  echo "release: $BASE_REPO@$RELEASE_TAG"
-  echo "PR #$PR_NUMBER: open=$PR_OPEN head=$PR_SHA"
-  git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
-  git -C "$SRC" fetch --no-tags -q release "refs/tags/$RELEASE_TAG"
-  BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
-  git -C "$SRC" checkout -q --detach "$BASE_SHA"
+  # PR #2808 conflicts with the newest release, and merging it produces code
+  # that does not compile. While the PR is open, build its head as-is: it is
+  # self-consistent and carries the fix. Once the PR is merged or closed,
+  # build the newest release tag, which then contains the fix.
   if [ "$PR_OPEN" = "true" ]; then
+    echo "PR #$PR_NUMBER: open, building head $PR_SHA"
     git -C "$SRC" fetch --no-tags -q "$PR_REPO" "refs/heads/$PR_REF"
-    git -C "$SRC" merge --no-ff -X theirs -q "$PR_SHA" \
-      -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($PR_SHORT)"
-    SOURCE_REF="$RELEASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
+    git -C "$SRC" checkout -q --detach "$PR_SHA"
+    SOURCE_REF="PR #$PR_NUMBER ($PR_SHA)"
   else
-    SOURCE_REF="$RELEASE_TAG"
+    echo "PR #$PR_NUMBER: not open, building release $BASE_TAG"
+    git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
+    git -C "$SRC" fetch --no-tags -q release "refs/tags/$BASE_TAG"
+    BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
+    git -C "$SRC" checkout -q --detach "$BASE_SHA"
+    SOURCE_REF="$BASE_TAG"
   fi
   UPSTREAM="$BASE_REPO"
 else

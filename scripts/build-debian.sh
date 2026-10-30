@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the upstream PdfCraft source and produce its Debian/Ubuntu package.
+# Build the upstream PdfCraft source and produce its Debian and RPM packages.
 # This runs inside a glibc-based Rust container from build-debian.yml.
 set -eu
 
@@ -33,7 +33,7 @@ api_get() {
 echo "=== installing build dependencies ==="
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-  ca-certificates curl jq git build-essential cmake pkg-config \
+  ca-certificates curl jq git build-essential cmake pkg-config rpm \
   libwayland-dev libxkbcommon-dev libx11-dev libxrandr-dev libxi-dev \
   libxcursor-dev libegl1-mesa-dev libvulkan-dev
 rm -rf /var/lib/apt/lists/*
@@ -61,21 +61,22 @@ if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
     PR_REPO="$(printf '%s\n' "$PR_JSON" | jq -r .head.repo.clone_url)"
     PR_REF="$(printf '%s\n' "$PR_JSON" | jq -r .head.ref)"
   fi
-  RELEASE_TAG="$BASE_TAG"
-  PR_SHORT="$(printf '%s\n' "$PR_SHA" | cut -c1-8)"
-  echo "release: $BASE_REPO@$RELEASE_TAG"
-  echo "PR #$PR_NUMBER: open=$PR_OPEN head=$PR_SHA"
-  git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
-  git -C "$SRC" fetch --no-tags -q release "refs/tags/$RELEASE_TAG"
-  BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
-  git -C "$SRC" checkout -q --detach "$BASE_SHA"
+  # PR #2808 conflicts with the newest release, and merging it produces code
+  # that does not compile. While the PR is open, build its head as-is: it is
+  # self-consistent and carries the fix. Once the PR is merged or closed,
+  # build the newest release tag, which then contains the fix.
   if [ "$PR_OPEN" = "true" ]; then
+    echo "PR #$PR_NUMBER: open, building head $PR_SHA"
     git -C "$SRC" fetch --no-tags -q "$PR_REPO" "refs/heads/$PR_REF"
-    git -C "$SRC" merge --no-ff -X theirs -q "$PR_SHA" \
-      -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($PR_SHORT)"
-    SOURCE_REF="$RELEASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
+    git -C "$SRC" checkout -q --detach "$PR_SHA"
+    SOURCE_REF="PR #$PR_NUMBER ($PR_SHA)"
   else
-    SOURCE_REF="$RELEASE_TAG"
+    echo "PR #$PR_NUMBER: not open, building release $BASE_TAG"
+    git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
+    git -C "$SRC" fetch --no-tags -q release "refs/tags/$BASE_TAG"
+    BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
+    git -C "$SRC" checkout -q --detach "$BASE_SHA"
+    SOURCE_REF="$BASE_TAG"
   fi
   UPSTREAM="$BASE_REPO"
 else
@@ -111,15 +112,23 @@ echo "=== refreshing Cargo.lock for merged upstream/PR source ==="
 cd "$SRC"
 cargo generate-lockfile
 
-echo "=== building Debian package for $UPSTREAM @ $SOURCE_REF ==="
-packaging/linux/package.sh --formats deb
+echo "=== building Debian and RPM packages for $UPSTREAM @ $SOURCE_REF ==="
+packaging/linux/package.sh --formats "deb rpm"
 
-echo "=== verifying package ==="
+echo "=== verifying packages ==="
 DEB="$(find "$OUT" -maxdepth 1 -type f -name '*.deb' -print -quit)"
 [ -n "$DEB" ] || { echo "error: no .deb was produced" >&2; exit 1; }
 dpkg-deb --info "$DEB"
 dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft$'
 dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft-cli$'
+
+RPM="$(find "$OUT" -maxdepth 1 -type f -name '*.rpm' -print -quit)"
+[ -n "$RPM" ] || { echo "error: no .rpm was produced" >&2; exit 1; }
+rpm -qp --queryformat 'rpm: %{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' "$RPM"
+rpm -qpl "$RPM" | grep -q '/usr/bin/pdfcraft$'
+rpm -qpl "$RPM" | grep -q '/usr/bin/pdfcraft-cli$'
+
+# The .rpm is published as a workflow artifact only, so it is not listed here.
 (cd "$OUT" && sha256sum "$(basename "$DEB")" > SHA256SUMS)
 
 {
@@ -131,6 +140,7 @@ dpkg-deb --contents "$DEB" | grep -q '/usr/bin/pdfcraft-cli$'
   echo "tree     : $UPSTREAM_TREE"
   echo "built on : $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "label    : $BUILD_LABEL"
+  echo "packages : .deb (release asset), .rpm (workflow artifact only)"
 } > "$OUT/BUILD-INFO.txt"
 
 ls -lh "$OUT"

@@ -4,10 +4,10 @@ PdfCraft for Alpine Linux (musl) — unofficial build
 Unofficial musl build of PdfCraft for Alpine Linux (x86_64), compiled in an
 Alpine container from upstream source at a pinned commit.
 
-This build merges the newest upstream PdfCraft release with pull request #2808
-(issue #79), carried by the `vinod2807/pdfcraft` branch `pr79-carrier`. The exact
-upstream tag, commit and tree are in `BUILD-INFO.txt`. Upstream code is
-`storytold/pdfcraft`; the fix is by @chiranjeevi-max.
+This build tracks the head of pull request #2808 (issue #79). The PR conflicts
+with the newest upstream release, so while it is open it is built directly
+rather than merged; the exact commit and tree are in `BUILD-INFO.txt`. Upstream
+code is `storytold/pdfcraft`; the fix is by @chiranjeevi-max.
 
 With PR #2808, a signature widget
 whose stored appearance says "Signature Not Verified" now draws its real

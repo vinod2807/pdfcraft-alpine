@@ -4,9 +4,9 @@ name: Build PdfCraft for Alpine Linux (musl)
 # publishes it as a GitHub Release. The source is fetched from the upstream
 # repository at build time; this repository holds only the build harness.
 #
-# Default target: the latest storytold/pdfcraft release merged with the current
-# head of PR #2808. The merge is performed in the build container, so this
-# workflow does not depend on a tracking branch in a fork.
+# Default target: the head of PR #2808 while it is open (it conflicts with the
+# newest release, so merging the two does not compile); once the PR is merged
+# or closed, the newest storytold/pdfcraft release tag.
 
 on:
   workflow_dispatch:
@@ -82,8 +82,8 @@ jobs:
           pr_ref=""
           pr_open=false
           if [ "$TRACK_PR_INPUT" = "true" ]; then
-            # Resolve exactly what the build job will build: the newest
-            # release tag merged with the PR head while the PR is open.
+            # Resolve exactly what the build job will build: the PR head
+            # while the PR is open, else the newest release tag.
             tag="$(gh api "repos/$BASE_REPO/releases/latest" --jq .tag_name)"
             pr="$(gh api "repos/$BASE_REPO/pulls/$PR_NUMBER")"
             state="$(printf '%s' "$pr" | jq -r .state)"
@@ -93,22 +93,13 @@ jobs:
             pr_ref="$(printf '%s' "$pr" | jq -r .head.ref)"
             if [ "$state" = "open" ] && [ "$merged" = "false" ]; then
               pr_open=true
+              pr_repo_full="$(printf '%s' "$pr" | jq -r .head.repo.full_name)"
+              tree="$(gh api "repos/$pr_repo_full/commits/$pr_sha" --jq .commit.tree.sha)"
+              echo "target: PR #$PR_NUMBER head $pr_sha"
+            else
+              tree="$(gh api "repos/$BASE_REPO/commits/$tag" --jq .commit.tree.sha)"
+              echo "target: release $tag"
             fi
-            work="$(mktemp -d)"
-            git -C "$work" init -q
-            git -C "$work" remote add release "https://github.com/$BASE_REPO.git"
-            # Full history: a shallow PR fetch has no common ancestor with
-            # the tag, so the merge (and its tree) would be wrong.
-            git -C "$work" fetch -q release "refs/tags/$tag"
-            git -C "$work" checkout -q --detach FETCH_HEAD
-            if [ "$pr_open" = "true" ]; then
-              git -C "$work" fetch -q "$pr_repo" "refs/heads/$pr_ref"
-              git -C "$work" -c user.name=plan -c user.email=plan@localhost \
-                merge --no-ff -X theirs -q "$pr_sha" -m "plan"
-            fi
-            tree="$(git -C "$work" rev-parse 'HEAD^{tree}')"
-            rm -rf "$work"
-            echo "target: $tag + PR #$PR_NUMBER ($pr_sha), open=$pr_open"
           else
             sha="$(gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)"
             tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$sha" --jq .commit.tree.sha)"
@@ -267,7 +258,7 @@ jobs:
             gh release upload "$tag" out/* --clobber
           else
             gh release create "$tag" out/* \
-              --title "PdfCraft for Alpine Linux (musl) — upstream release + PR #2808" \
+              --title "PdfCraft for Alpine Linux (musl) — PR #2808 build" \
               --notes-file .github/release-notes.md \
               --prerelease
           fi
