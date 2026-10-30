@@ -20,7 +20,7 @@ on:
         type: string
         default: main
       track_upstream_pr:
-        description: Build the latest upstream release plus PR #2808
+        description: Build PR #2808 while it is open, else the latest upstream release
         type: boolean
         default: true
       craft_fonts_ref:
