@@ -10,9 +10,25 @@ BASE_REPO="${BASE_REPO:-storytold/pdfcraft}"
 PR_NUMBER="${PR_NUMBER:-2808}"
 CRAFT_FONTS_REF="${CRAFT_FONTS_REF:-}"
 BUILD_LABEL="${PDFCRAFT_BUILD_LABEL:-debian}"
+# Resolved by the workflow's plan job; empty for a standalone run.
+BASE_TAG="${BASE_TAG:-}"
+PR_SHA="${PR_SHA:-}"
+PR_REPO="${PR_REPO:-}"
+PR_REF="${PR_REF:-}"
+PR_OPEN="${PR_OPEN:-false}"
 WORK=/github/work
 SRC="$WORK/src"
 OUT=/github/out
+
+# Authenticate API requests when a token is available: the unauthenticated
+# limit (60 requests/hour per IP) is regularly exhausted on shared runners.
+api_get() {
+  if [ -n "${GH_TOKEN:-}" ]; then
+    curl -fsSL -H "Authorization: Bearer $GH_TOKEN" "$1"
+  else
+    curl -fsSL "$1"
+  fi
+}
 
 echo "=== installing build dependencies ==="
 apt-get update
@@ -35,21 +51,25 @@ git config --global --add safe.directory "$SRC"
 git -C "$SRC" config user.name "PdfCraft build bot"
 git -C "$SRC" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
-  RELEASE_TAG="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
-  PR_JSON="$(curl -fsSL "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
-  PR_STATE="$(printf '%s\n' "$PR_JSON" | jq -r .state)"
-  PR_MERGED="$(printf '%s\n' "$PR_JSON" | jq -r .merged)"
-  PR_SHA="$(printf '%s\n' "$PR_JSON" | jq -r .head.sha)"
-  PR_REPO="$(printf '%s\n' "$PR_JSON" | jq -r .head.repo.clone_url)"
-  PR_REF="$(printf '%s\n' "$PR_JSON" | jq -r .head.ref)"
+  # The workflow's plan job resolves the target with an authenticated API
+  # call and passes it in; only a standalone run needs to query GitHub here.
+  if [ -z "${BASE_TAG:-}" ] || [ -z "${PR_SHA:-}" ]; then
+    BASE_TAG="$(api_get "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
+    PR_JSON="$(api_get "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
+    PR_OPEN="$(printf '%s\n' "$PR_JSON" | jq -r 'if .state == "open" and .merged == false then "true" else "false" end')"
+    PR_SHA="$(printf '%s\n' "$PR_JSON" | jq -r .head.sha)"
+    PR_REPO="$(printf '%s\n' "$PR_JSON" | jq -r .head.repo.clone_url)"
+    PR_REF="$(printf '%s\n' "$PR_JSON" | jq -r .head.ref)"
+  fi
+  RELEASE_TAG="$BASE_TAG"
   PR_SHORT="$(printf '%s\n' "$PR_SHA" | cut -c1-8)"
   echo "release: $BASE_REPO@$RELEASE_TAG"
-  echo "PR #$PR_NUMBER: state=$PR_STATE merged=$PR_MERGED head=$PR_SHA"
+  echo "PR #$PR_NUMBER: open=$PR_OPEN head=$PR_SHA"
   git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
   git -C "$SRC" fetch --no-tags -q release "refs/tags/$RELEASE_TAG"
   BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
   git -C "$SRC" checkout -q --detach "$BASE_SHA"
-  if [ "$PR_STATE" = "open" ] && [ "$PR_MERGED" = "false" ]; then
+  if [ "$PR_OPEN" = "true" ]; then
     git -C "$SRC" fetch --no-tags -q "$PR_REPO" "refs/heads/$PR_REF"
     git -C "$SRC" merge --no-ff -X theirs -q "$PR_SHA" \
       -m "Carrier: $RELEASE_TAG + PR #$PR_NUMBER ($PR_SHORT)"

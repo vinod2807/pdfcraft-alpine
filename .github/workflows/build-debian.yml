@@ -52,6 +52,11 @@ jobs:
       build: ${{ steps.decide.outputs.build }}
       upstream: ${{ steps.decide.outputs.upstream }}
       ref: ${{ steps.decide.outputs.ref }}
+      tag: ${{ steps.decide.outputs.tag }}
+      pr_sha: ${{ steps.decide.outputs.pr_sha }}
+      pr_repo: ${{ steps.decide.outputs.pr_repo }}
+      pr_ref: ${{ steps.decide.outputs.pr_ref }}
+      pr_open: ${{ steps.decide.outputs.pr_open }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -67,39 +72,47 @@ jobs:
         id: decide
         run: |
           set -euo pipefail
+          tag=""
+          pr_sha=""
+          pr_repo=""
+          pr_ref=""
+          pr_open=false
+          if [ "$TRACK_PR_INPUT" = "true" ]; then
+            # Resolve exactly what the build job will build: the newest
+            # release tag merged with the PR head while the PR is open.
+            tag="$(gh api "repos/$BASE_REPO/releases/latest" --jq .tag_name)"
+            pr="$(gh api "repos/$BASE_REPO/pulls/$PR_NUMBER")"
+            state="$(printf '%s' "$pr" | jq -r .state)"
+            merged="$(printf '%s' "$pr" | jq -r .merged)"
+            pr_sha="$(printf '%s' "$pr" | jq -r .head.sha)"
+            pr_repo="$(printf '%s' "$pr" | jq -r .head.repo.clone_url)"
+            pr_ref="$(printf '%s' "$pr" | jq -r .head.ref)"
+            if [ "$state" = "open" ] && [ "$merged" = "false" ]; then
+              pr_open=true
+            fi
+            work="$(mktemp -d)"
+            git -C "$work" init -q
+            git -C "$work" remote add release "https://github.com/$BASE_REPO.git"
+            # Full history: a shallow PR fetch has no common ancestor with
+            # the tag, so the merge (and its tree) would be wrong.
+            git -C "$work" fetch -q release "refs/tags/$tag"
+            git -C "$work" checkout -q --detach FETCH_HEAD
+            if [ "$pr_open" = "true" ]; then
+              git -C "$work" fetch -q "$pr_repo" "refs/heads/$pr_ref"
+              git -C "$work" -c user.name=plan -c user.email=plan@localhost \
+                merge --no-ff -X theirs -q "$pr_sha" -m "plan"
+            fi
+            tree="$(git -C "$work" rev-parse 'HEAD^{tree}')"
+            rm -rf "$work"
+            echo "target: $tag + PR #$PR_NUMBER ($pr_sha), open=$pr_open"
+          else
+            sha="$(gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)"
+            tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$sha" --jq .commit.tree.sha)"
+            echo "target: $UPSTREAM_INPUT@$REF_INPUT ($sha)"
+          fi
+          echo "target tree: $tree"
           build=true
           if [ "$FORCE_INPUT" != "true" ]; then
-            if [ "$TRACK_PR_INPUT" = "true" ]; then
-              # Resolve exactly what the build job will build: the newest
-              # release tag merged with the PR head while the PR is open.
-              tag="$(gh api "repos/$BASE_REPO/releases/latest" --jq .tag_name)"
-              pr="$(gh api "repos/$BASE_REPO/pulls/$PR_NUMBER")"
-              state="$(printf '%s' "$pr" | jq -r .state)"
-              merged="$(printf '%s' "$pr" | jq -r .merged)"
-              sha="$(printf '%s' "$pr" | jq -r .head.sha)"
-              repo="$(printf '%s' "$pr" | jq -r .head.repo.clone_url)"
-              ref="$(printf '%s' "$pr" | jq -r .head.ref)"
-              work="$(mktemp -d)"
-              git -C "$work" init -q
-              git -C "$work" remote add release "https://github.com/$BASE_REPO.git"
-              # Full history: a shallow PR fetch has no common ancestor with
-              # the tag, so the merge (and its tree) would be wrong.
-              git -C "$work" fetch -q release "refs/tags/$tag"
-              git -C "$work" checkout -q --detach FETCH_HEAD
-              if [ "$state" = "open" ] && [ "$merged" = "false" ]; then
-                git -C "$work" fetch -q "$repo" "refs/heads/$ref"
-                git -C "$work" -c user.name=plan -c user.email=plan@localhost \
-                  merge --no-ff -X theirs -q "$sha" -m "plan"
-              fi
-              tree="$(git -C "$work" rev-parse 'HEAD^{tree}')"
-              rm -rf "$work"
-              echo "target: $tag + PR #$PR_NUMBER ($sha)"
-            else
-              sha="$(gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)"
-              tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$sha" --jq .commit.tree.sha)"
-              echo "target: $UPSTREAM_INPUT@$REF_INPUT ($sha)"
-            fi
-            echo "target tree: $tree"
             built_tree=""
             if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt \
                  -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
@@ -115,6 +128,11 @@ jobs:
             echo "build=$build"
             echo "upstream=$UPSTREAM_INPUT"
             echo "ref=$REF_INPUT"
+            echo "tag=$tag"
+            echo "pr_sha=$pr_sha"
+            echo "pr_repo=$pr_repo"
+            echo "pr_ref=$pr_ref"
+            echo "pr_open=$pr_open"
           } >> "$GITHUB_OUTPUT"
 
   build:
@@ -128,6 +146,11 @@ jobs:
       TRACK_UPSTREAM_PR: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_upstream_pr) || 'true' }}
       BASE_REPO: storytold/pdfcraft
       PR_NUMBER: "2808"
+      BASE_TAG: ${{ needs.plan.outputs.tag }}
+      PR_SHA: ${{ needs.plan.outputs.pr_sha }}
+      PR_REPO: ${{ needs.plan.outputs.pr_repo }}
+      PR_REF: ${{ needs.plan.outputs.pr_ref }}
+      PR_OPEN: ${{ needs.plan.outputs.pr_open }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
       RELEASE_TAG: ${{ inputs.release_tag || 'debian-ubuntu' }}
       # Debian 12's glibc floor is supported by Debian 12 and Ubuntu 22.04+.
@@ -148,6 +171,7 @@ jobs:
             --volume "$PWD:/github" \
             --workdir /github \
             --env UPSTREAM --env REF --env TRACK_UPSTREAM_PR --env BASE_REPO --env PR_NUMBER \
+            --env BASE_TAG --env PR_SHA --env PR_REPO --env PR_REF --env PR_OPEN \
             --env CRAFT_FONTS_REF \
             --env PDFCRAFT_BUILD_LABEL --env CARGO_NET_GIT_FETCH_WITH_CLI \
             --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
