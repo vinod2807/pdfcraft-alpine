@@ -155,9 +155,7 @@ jobs:
           
           gh release create "$TAG" release-assets/* \
             --title "PdfCraft $VERSION (Unified Release)" \
-            --notes "Unofficial builds from storytold/pdfcraft $TAG:
-- Alpine Linux (musl): .apk, .tar.gz
-- Debian/Ubuntu (glibc): .deb, .rpm" \
+            --notes $'Unofficial builds from storytold/pdfcraft $TAG:\n• Alpine Linux (musl): .apk, .tar.gz\n• Debian/Ubuntu (glibc): .deb, .rpm' \
             --prerelease=false
           
           echo "Release published: https://github.com/${{ github.repository }}/releases/tag/$TAG"
