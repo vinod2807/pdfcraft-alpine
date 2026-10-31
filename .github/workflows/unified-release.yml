@@ -62,14 +62,17 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Find latest successful Alpine build
+      - name: Find or trigger Alpine build
         if: steps.check.outputs.exists == 'false'
-        id: alpine-find
+        id: alpine-build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Find latest successful Alpine build run that has artifacts
+          VERSION="${{ steps.upstream.outputs.version }}"
+          TAG="${{ steps.upstream.outputs.tag }}"
+          
+          # Look for existing successful Alpine build with artifacts for this version
           RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100" \
@@ -80,8 +83,7 @@ jobs:
             ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/runs/$r/artifacts" \
-              | jq -r '.artifacts[]?.name' | grep -c 'pdfcraft-alpine-x86_64' 2>/dev/null || echo 0)
-            # Ensure ARTIFACTS is a single number
+              | jq -r '.artifacts[]?.name' | grep -c "pdfcraft-$VERSION-alpine-x86_64" 2>/dev/null || echo 0)
             ARTIFACTS=$(echo "$ARTIFACTS" | tail -1)
             if [ "$ARTIFACTS" -gt 0 ]; then
               RUN=$r
@@ -90,20 +92,68 @@ jobs:
           done
           
           if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
-            echo "No successful Alpine build with artifacts found"
-            exit 1
+            echo "No existing Alpine build for version $VERSION, triggering new build..."
+            gh workflow run build.yml \
+              -f track_upstream_pr=false \
+              -f ref="$TAG" \
+              -f force=true
+            sleep 10
+            # Find the run we just triggered
+            RUN=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=10" \
+              | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | select(.event == "workflow_dispatch") | .id' \
+              | head -1)
+            if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
+              echo "Failed to trigger Alpine build"
+              exit 1
+            fi
+            echo "Triggered Alpine build: $RUN"
+          else
+            echo "Found existing Alpine build: $RUN"
           fi
+          
           echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
-          echo "Found Alpine build: $RUN"
+          echo "alpine_triggered=$([ -z "$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN" | jq -r '.event == "workflow_dispatch"') ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
 
-      - name: Find latest successful Debian build
-        if: steps.check.outputs.exists == 'false'
-        id: debian-find
+      - name: Wait for Alpine build
+        if: steps.check.outputs.exists == 'false' && steps.alpine-build.outputs.alpine_triggered == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Find latest successful Debian build run that has artifacts
+          RUN="${{ steps.alpine-build.outputs.alpine_run_id }}"
+          echo "Waiting for Alpine build $RUN..."
+          while true; do
+            STATUS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN" | jq -r '.status')
+            CONCLUSION=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN" | jq -r '.conclusion // ""')
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "Alpine build succeeded"
+                break
+              else
+                echo "Alpine build failed: $CONCLUSION"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
+
+      - name: Find or trigger Debian build
+        if: steps.check.outputs.exists == 'false'
+        id: debian-build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.upstream.outputs.version }}"
+          TAG="${{ steps.upstream.outputs.tag }}"
+          
+          # Look for existing successful Debian build with artifacts for this version
           RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=100" \
@@ -114,8 +164,7 @@ jobs:
             ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/actions/runs/$r/artifacts" \
-              | jq -r '.artifacts[]?.name' | grep -c 'pdfcraft-debian-amd64' 2>/dev/null || echo 0)
-            # Ensure ARTIFACTS is a single number
+              | jq -r '.artifacts[]?.name' | grep -c "pdfcraft-$VERSION-debian-amd64" 2>/dev/null || echo 0)
             ARTIFACTS=$(echo "$ARTIFACTS" | tail -1)
             if [ "$ARTIFACTS" -gt 0 ]; then
               RUN=$r
@@ -124,42 +173,56 @@ jobs:
           done
           
           if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
-            echo "No successful Debian build with artifacts found"
-            exit 1
+            echo "No existing Debian build for version $VERSION, triggering new build..."
+            gh workflow run build-debian.yml \
+              -f track_upstream_pr=false \
+              -f ref="$TAG" \
+              -f force=true
+            sleep 10
+            # Find the run we just triggered
+            RUN=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=10" \
+              | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | select(.event == "workflow_dispatch") | .id' \
+              | head -1)
+            if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
+              echo "Failed to trigger Debian build"
+              exit 1
+            fi
+            echo "Triggered Debian build: $RUN"
+          else
+            echo "Found existing Debian build: $RUN"
           fi
+          
           echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
-          echo "Found Debian build: $RUN"
+          echo "debian_triggered=$([ -z "$(curl -s -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN" | jq -r '.event == "workflow_dispatch"') ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
 
-      - name: Verify builds are for same version
-        if: steps.check.outputs.exists == 'false'
+      - name: Wait for Debian build
+        if: steps.check.outputs.exists == 'false' && steps.debian-build.outputs.debian_triggered == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          ALPINE_RUN="${{ steps.alpine-find.outputs.alpine_run_id }}"
-          DEBIAN_RUN="${{ steps.debian-find.outputs.debian_run_id }}"
-          
-          # Verify both builds have artifacts
-          ALPINE_ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$ALPINE_RUN/artifacts" \
-            | jq -r '.artifacts[]?.name' | grep -c 'pdfcraft-alpine-x86_64' 2>/dev/null || echo 0)
-          
-          DEBIAN_ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$DEBIAN_RUN/artifacts" \
-            | jq -r '.artifacts[]?.name' | grep -c 'pdfcraft-debian-amd64' 2>/dev/null || echo 0)
-          
-          if [ "$ALPINE_ARTIFACTS" -eq 0 ] || [ "$DEBIAN_ARTIFACTS" -eq 0 ]; then
-            echo "One or both builds missing artifacts"
-            exit 1
-          fi
-          
-          # Use the upstream version we already fetched
-          EXPECTED_VERSION="${{ steps.upstream.outputs.version }}"
-          echo "Both builds have artifacts for version $EXPECTED_VERSION"
-          echo "build_version=$EXPECTED_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Builds are for version $EXPECTED_VERSION"
+          RUN="${{ steps.debian-build.outputs.debian_run_id }}"
+          echo "Waiting for Debian build $RUN..."
+          while true; do
+            STATUS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN" | jq -r '.status')
+            CONCLUSION=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN" | jq -r '.conclusion // ""')
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "Debian build succeeded"
+                break
+              else
+                echo "Debian build failed: $CONCLUSION"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
 
       - name: Download Alpine artifacts
         if: steps.check.outputs.exists == 'false'
@@ -168,10 +231,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p alpine-artifacts
-          # Get artifact download URL
+          RUN="${{ steps.alpine-build.outputs.alpine_run_id }}"
           DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ steps.alpine-find.outputs.alpine_run_id }}/artifacts" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
             | jq -r '.artifacts[] | select(.name == "pdfcraft-alpine-x86_64") | .archive_download_url')
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
             echo "Could not find Alpine artifact download URL"
@@ -192,10 +255,10 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p debian-artifacts
-          # Get artifact download URL
+          RUN="${{ steps.debian-build.outputs.debian_run_id }}"
           DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ steps.debian-find.outputs.debian_run_id }}/artifacts" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
             | jq -r '.artifacts[] | select(.name == "pdfcraft-debian-amd64") | .archive_download_url')
           if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
             echo "Could not find Debian artifact download URL"
