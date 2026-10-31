@@ -1,108 +1,143 @@
 name: Unified PdfCraft Release
 
 on:
-  workflow_run:
-    workflows:
-      - "Build PdfCraft for Alpine Linux (musl)"
-      - "Build PdfCraft for Debian and Ubuntu"
-    types: [completed]
-    branches: [main]
+  schedule:
+    # Run weekly on Monday at 06:00 UTC (after Alpine 04:43 and Debian 04:53 builds)
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Specific version to release (e.g. 0.14.0). Empty = latest upstream release.'
+        type: string
+        required: false
 
 permissions:
   contents: write
   actions: read
 
 jobs:
-  check-both-succeeded:
+  check-and-release:
     runs-on: ubuntu-latest
-    outputs:
-      alpine_run_id: ${{ steps.get-runs.outputs.alpine_run_id }}
-      debian_run_id: ${{ steps.get-runs.outputs.debian_run_id }}
-      version: ${{ steps.get-runs.outputs.version }}
-      tag: ${{ steps.get-runs.outputs.tag }}
     steps:
-      - name: Get both workflow run IDs
-        id: get-runs
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Get upstream latest release version
+        id: upstream
         run: |
           set -euo pipefail
-          
-          # Get the triggering run IDs
-          ALPINE_RUN="${{ github.event.workflow_run.id }}"
-          DEBIAN_RUN=""
-          
-          # Find the paired run for the other workflow
-          # We need to match by the same source tree (commit/tree)
-          echo "Triggering workflow: ${{ github.event.workflow_run.name }}"
-          echo "Triggering run ID: $ALPINE_RUN"
-          
-          # Get all recent runs for both workflows
-          RUNS=$(gh api repos/${{ github.repository }}/actions/runs \
-            --jq '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)" or .name == "Build PdfCraft for Debian and Ubuntu") | select(.conclusion == "success") | {name: .name, id: .id, head_sha: .head_sha, created_at: .created_at}' \
-            --paginate 2>/dev/null | jq -s 'sort_by(.created_at) | reverse')
-          
-          echo "Recent successful runs:"
-          echo "$RUNS" | jq -r '.[] | "\(.name) \(.id) \(.head_sha) \(.created_at)"'
-          
-          # Find the latest successful run for each workflow
-          ALPINE_LATEST=$(echo "$RUNS" | jq -r '.[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | .id' | head -1)
-          DEBIAN_LATEST=$(echo "$RUNS" | jq -r '.[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | .id' | head -1)
-          
-          if [ -z "$ALPINE_LATEST" ] || [ -z "$DEBIAN_LATEST" ]; then
-            echo "Missing successful run for one or both workflows"
-            exit 1
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+            TAG="v$VERSION"
+            echo "Using specified version: $VERSION"
+          else
+            RELEASE=$(gh api repos/storytold/pdfcraft/releases/latest)
+            TAG=$(echo "$RELEASE" | jq -r .tag_name)
+            VERSION=${TAG#v}
+            echo "Latest upstream release: $TAG ($VERSION)"
           fi
-          
-          # Verify they're from the same source tree (same head_sha)
-          ALPINE_SHA=$(echo "$RUNS" | jq -r ".[] | select(.id == $ALPINE_LATEST) | .head_sha")
-          DEBIAN_SHA=$(echo "$RUNS" | jq -r ".[] | select(.id == $DEBIAN_LATEST) | .head_sha")
-          
-          if [ "$ALPINE_SHA" != "$DEBIAN_SHA" ]; then
-            echo "Source mismatch: Alpine=$ALPINE_SHA, Debian=$DEBIAN_SHA"
-            exit 1
-          fi
-          
-          # Get version from Alpine run artifacts
-          ARTIFACTS=$(gh api repos/${{ github.repository }}/actions/runs/$ALPINE_LATEST/artifacts --jq '.artifacts[].name')
-          echo "Alpine artifacts: $ARTIFACTS"
-          
-          # Extract version from artifact name (pdfcraft-<version>-alpine-x86_64.tar.gz)
-          VERSION=$(echo "$ARTIFACTS" | grep -oE 'pdfcraft-[0-9]+\.[0-9]+\.[0-9]+-alpine-x86_64' | head -1 | sed 's/pdfcraft-\(.*\)-alpine-x86_64/\1/')
-          if [ -z "$VERSION" ]; then
-            echo "Could not extract version from artifacts"
-            exit 1
-          fi
-          
-          TAG="pdfcraft-$VERSION"
-          
-          echo "alpine_run_id=$ALPINE_LATEST" >> "$GITHUB_OUTPUT"
-          echo "debian_run_id=$DEBIAN_LATEST" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-  create-unified-release:
-    needs: check-both-succeeded
-    if: needs.check-both-succeeded.outputs.alpine_run_id != ''
-    runs-on: ubuntu-latest
-    steps:
+      - name: Check if unified release already exists
+        id: check
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.upstream.outputs.version }}"
+          TAG="pdfcraft-$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Unified release $TAG already exists, skipping"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No unified release for $VERSION, will create"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Alpine build
+        if: steps.check.outputs.exists == 'false'
+        id: alpine-trigger
+        run: |
+          set -euo pipefail
+          RUN=$(gh workflow run build.yml \
+            -f track_upstream_pr=false \
+            -f ref="${{ steps.upstream.outputs.tag }}" \
+            -f force=true \
+            --json databaseId --jq .databaseId)
+          echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
+          echo "Triggered Alpine build: $RUN"
+
+      - name: Trigger Debian build
+        if: steps.check.outputs.exists == 'false'
+        id: debian-trigger
+        run: |
+          set -euo pipefail
+          RUN=$(gh workflow run build-debian.yml \
+            -f track_upstream_pr=false \
+            -f ref="${{ steps.upstream.outputs.tag }}" \
+            -f force=true \
+            --json databaseId --jq .databaseId)
+          echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
+          echo "Triggered Debian build: $RUN"
+
+      - name: Wait for Alpine build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          RUN="${{ steps.alpine-trigger.outputs.alpine_run_id }}"
+          echo "Waiting for Alpine build $RUN..."
+          while true; do
+            STATUS=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.status')
+            CONCLUSION=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.conclusion // ""')
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "Alpine build succeeded"
+                break
+              else
+                echo "Alpine build failed: $CONCLUSION"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
+
+      - name: Wait for Debian build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -euo pipefail
+          RUN="${{ steps.debian-trigger.outputs.debian_run_id }}"
+          echo "Waiting for Debian build $RUN..."
+          while true; do
+            STATUS=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.status')
+            CONCLUSION=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.conclusion // ""')
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "Debian build succeeded"
+                break
+              else
+                echo "Debian build failed: $CONCLUSION"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
+
       - name: Download Alpine artifacts
+        if: steps.check.outputs.exists == 'false'
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ needs.check-both-succeeded.outputs.alpine_run_id }}
+          run-id: ${{ steps.alpine-trigger.outputs.alpine_run_id }}
           path: alpine-artifacts
           pattern: pdfcraft-alpine-x86_64
           merge-multiple: true
 
       - name: Download Debian artifacts
+        if: steps.check.outputs.exists == 'false'
         uses: actions/download-artifact@v4
         with:
-          run-id: ${{ needs.check-both-succeeded.outputs.debian_run_id }}
+          run-id: ${{ steps.debian-trigger.outputs.debian_run_id }}
           path: debian-artifacts
           pattern: pdfcraft-debian-amd64
           merge-multiple: true
 
       - name: Prepare unified release
+        if: steps.check.outputs.exists == 'false'
         run: |
           mkdir -p release-assets
           cp alpine-artifacts/* release-assets/ 2>/dev/null || true
@@ -110,24 +145,19 @@ jobs:
           ls -la release-assets/
 
       - name: Create unified release
+        if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ needs.check-both-succeeded.outputs.tag }}"
-          VERSION="${{ needs.check-both-succeeded.outputs.version }}"
+          VERSION="${{ steps.upstream.outputs.version }}"
+          TAG="pdfcraft-$VERSION"
           
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG exists, uploading assets..."
-            gh release upload "$TAG" release-assets/* --clobber
-          else
-            echo "Creating new release $TAG..."
-            gh release create "$TAG" release-assets/* \
-              --title "PdfCraft $VERSION (Unified Release)" \
-              --notes "Unofficial builds from storytold/pdfcraft:
+          gh release create "$TAG" release-assets/* \
+            --title "PdfCraft $VERSION (Unified Release)" \
+            --notes "Unofficial builds from storytold/pdfcraft $TAG:
 - Alpine Linux (musl): .apk, .tar.gz
 - Debian/Ubuntu (glibc): .deb, .rpm" \
-              --prerelease=false
-          fi
+            --prerelease=false
           
           echo "Release published: https://github.com/${{ github.repository }}/releases/tag/$TAG"
