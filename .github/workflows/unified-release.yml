@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Get upstream latest release version
         id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -n "${{ github.event.inputs.version }}" ]; then
@@ -38,6 +40,8 @@ jobs:
 
       - name: Check if unified release already exists
         id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           VERSION="${{ steps.upstream.outputs.version }}"
@@ -53,6 +57,8 @@ jobs:
       - name: Trigger Alpine build
         if: steps.check.outputs.exists == 'false'
         id: alpine-trigger
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RUN=$(gh workflow run build.yml \
@@ -66,6 +72,8 @@ jobs:
       - name: Trigger Debian build
         if: steps.check.outputs.exists == 'false'
         id: debian-trigger
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RUN=$(gh workflow run build-debian.yml \
@@ -78,6 +86,8 @@ jobs:
 
       - name: Wait for Alpine build
         if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RUN="${{ steps.alpine-trigger.outputs.alpine_run_id }}"
@@ -99,6 +109,8 @@ jobs:
 
       - name: Wait for Debian build
         if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           RUN="${{ steps.debian-trigger.outputs.debian_run_id }}"
