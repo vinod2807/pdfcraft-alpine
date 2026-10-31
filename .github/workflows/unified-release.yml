@@ -163,19 +163,51 @@ jobs:
 
       - name: Download Alpine artifacts
         if: steps.check.outputs.exists == 'false'
-        uses: actions/download-artifact@v4
-        with:
-          run-id: ${{ steps.alpine-find.outputs.alpine_run_id }}
-          path: alpine-artifacts
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p alpine-artifacts
+          # Get artifact download URL
+          DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ steps.alpine-find.outputs.alpine_run_id }}/artifacts" \
+            | jq -r '.artifacts[] | select(.name == "pdfcraft-alpine-x86_64") | .archive_download_url')
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            echo "Could not find Alpine artifact download URL"
+            exit 1
+          fi
+          echo "Downloading Alpine artifact from $DOWNLOAD_URL"
+          curl -L -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o alpine-artifacts/alpine.zip "$DOWNLOAD_URL"
+          unzip -o alpine-artifacts/alpine.zip -d alpine-artifacts
+          rm alpine-artifacts/alpine.zip
+          ls -la alpine-artifacts/
 
       - name: Download Debian artifacts
         if: steps.check.outputs.exists == 'false'
-        uses: actions/download-artifact@v4
-        with:
-          run-id: ${{ steps.debian-find.outputs.debian_run_id }}
-          path: debian-artifacts
-          merge-multiple: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p debian-artifacts
+          # Get artifact download URL
+          DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/${{ steps.debian-find.outputs.debian_run_id }}/artifacts" \
+            | jq -r '.artifacts[] | select(.name == "pdfcraft-debian-amd64") | .archive_download_url')
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            echo "Could not find Debian artifact download URL"
+            exit 1
+          fi
+          echo "Downloading Debian artifact from $DOWNLOAD_URL"
+          curl -L -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o debian-artifacts/debian.zip "$DOWNLOAD_URL"
+          unzip -o debian-artifacts/debian.zip -d debian-artifacts
+          rm debian-artifacts/debian.zip
+          ls -la debian-artifacts/
 
       - name: Prepare unified release
         if: steps.check.outputs.exists == 'false'
