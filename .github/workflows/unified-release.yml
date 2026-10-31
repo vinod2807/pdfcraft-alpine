@@ -107,7 +107,7 @@ jobs:
           echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
           echo "Found Debian build: $RUN"
 
-      - name: Extract version from builds
+      - name: Extract version from Alpine BUILD-INFO.txt
         id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -132,10 +132,46 @@ jobs:
             exit 1
           fi
           
-          # Use upstream version (builds track upstream by default)
-          EXPECTED_VERSION="${{ steps.upstream.outputs.version }}"
-          echo "build_version=$EXPECTED_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Both builds are for version $EXPECTED_VERSION"
+          # Download Alpine artifact to extract version from BUILD-INFO.txt
+          mkdir -p version-extract
+          RUN="$ALPINE_RUN"
+          DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
+            | jq -r '.artifacts[] | select(.name == "pdfcraft-alpine-x86_64") | .archive_download_url')
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            echo "Could not find Alpine artifact download URL"
+            exit 1
+          fi
+          curl -L -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -o version-extract/alpine.zip "$DOWNLOAD_URL"
+          unzip -o version-extract/alpine.zip -d version-extract
+          rm version-extract/alpine.zip
+          
+          # Extract version from BUILD-INFO.txt
+          BUILD_INFO=$(find version-extract -name "BUILD-INFO.txt" | head -1)
+          if [ -z "$BUILD_INFO" ] || [ ! -f "$BUILD_INFO" ]; then
+            echo "Could not find BUILD-INFO.txt"
+            exit 1
+          fi
+          BUILD_VERSION=$(grep -oE 'PdfCraft [0-9]+\.[0-9]+\.[0-9]+' "$BUILD_INFO" | head -1 | sed 's/PdfCraft //')
+          if [ -z "$BUILD_VERSION" ]; then
+            echo "Could not extract version from BUILD-INFO.txt"
+            exit 1
+          fi
+          
+          # If user specified a version, verify it matches
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            EXPECTED="${{ github.event.inputs.version }}"
+            if [ "$BUILD_VERSION" != "$EXPECTED" ]; then
+              echo "Version mismatch: builds are for $BUILD_VERSION, requested $EXPECTED"
+              exit 1
+            fi
+          fi
+          
+          echo "build_version=$BUILD_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Both builds are for version $BUILD_VERSION"
 
       - name: Check if unified release already exists
         id: check
