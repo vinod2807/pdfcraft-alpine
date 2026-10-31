@@ -61,11 +61,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUN=$(gh workflow run build.yml \
+          gh workflow run build.yml \
             -f track_upstream_pr=false \
             -f ref="${{ steps.upstream.outputs.tag }}" \
-            -f force=true \
-            --json databaseId --jq .databaseId)
+            -f force=true
+          # Find the run ID we just triggered
+          sleep 5
+          RUN=$(gh api repos/${{ github.repository }}/actions/runs \
+            --jq '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | select(.event == "workflow_dispatch") | .id' \
+            | head -1)
           echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
           echo "Triggered Alpine build: $RUN"
 
@@ -76,11 +80,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          RUN=$(gh workflow run build-debian.yml \
+          gh workflow run build-debian.yml \
             -f track_upstream_pr=false \
             -f ref="${{ steps.upstream.outputs.tag }}" \
-            -f force=true \
-            --json databaseId --jq .databaseId)
+            -f force=true
+          # Find the run ID we just triggered
+          sleep 5
+          RUN=$(gh api repos/${{ github.repository }}/actions/runs \
+            --jq '.workflow_runs[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | select(.event == "workflow_dispatch") | .id' \
+            | head -1)
           echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
           echo "Triggered Debian build: $RUN"
 
