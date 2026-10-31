@@ -187,7 +187,7 @@ jobs:
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
           else
-            gh release create "$RELEASE_TAG" "${assets[@]}" --prerelease \
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
               --title "PdfCraft for Debian/Ubuntu (amd64)" \
               --notes "Unofficial Debian/Ubuntu package built from $UPSTREAM at $REF."
           fi

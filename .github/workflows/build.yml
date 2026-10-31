@@ -259,6 +259,5 @@ jobs:
           else
             gh release create "$tag" out/* \
               --title "PdfCraft for Alpine Linux (musl) — PR #2808 build" \
-              --notes-file .github/release-notes.md \
-              --prerelease
+              --notes-file .github/release-notes.md
           fi
