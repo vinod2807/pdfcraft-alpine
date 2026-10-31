@@ -67,7 +67,7 @@ jobs:
             -f force=true
           # Find the run ID we just triggered
           sleep 5
-          RUN=$(gh api repos/${{ github.repository }}/actions/runs \
+          RUN=$(gh api "repos/${{ github.repository }}/actions/runs" \
             --jq '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | select(.event == "workflow_dispatch") | .id' \
             | head -1)
           echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
@@ -86,7 +86,7 @@ jobs:
             -f force=true
           # Find the run ID we just triggered
           sleep 5
-          RUN=$(gh api repos/${{ github.repository }}/actions/runs \
+          RUN=$(gh api "repos/${{ github.repository }}/actions/runs" \
             --jq '.workflow_runs[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | select(.event == "workflow_dispatch") | .id' \
             | head -1)
           echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
@@ -101,8 +101,8 @@ jobs:
           RUN="${{ steps.alpine-trigger.outputs.alpine_run_id }}"
           echo "Waiting for Alpine build $RUN..."
           while true; do
-            STATUS=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.status')
-            CONCLUSION=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.conclusion // ""')
+            STATUS=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN" --jq '.status')
+            CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN" --jq '.conclusion // ""')
             if [ "$STATUS" = "completed" ]; then
               if [ "$CONCLUSION" = "success" ]; then
                 echo "Alpine build succeeded"
@@ -124,8 +124,8 @@ jobs:
           RUN="${{ steps.debian-trigger.outputs.debian_run_id }}"
           echo "Waiting for Debian build $RUN..."
           while true; do
-            STATUS=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.status')
-            CONCLUSION=$(gh api repos/${{ github.repository }}/actions/runs/$RUN --jq '.conclusion // ""')
+            STATUS=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN" --jq '.status')
+            CONCLUSION=$(gh api "repos/${{ github.repository }}/actions/runs/$RUN" --jq '.conclusion // ""')
             if [ "$STATUS" = "completed" ]; then
               if [ "$CONCLUSION" = "success" ]; then
                 echo "Debian build succeeded"
