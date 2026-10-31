@@ -167,7 +167,6 @@ jobs:
         with:
           run-id: ${{ steps.alpine-find.outputs.alpine_run_id }}
           path: alpine-artifacts
-          pattern: pdfcraft-alpine-x86_64
           merge-multiple: true
 
       - name: Download Debian artifacts
@@ -176,7 +175,6 @@ jobs:
         with:
           run-id: ${{ steps.debian-find.outputs.debian_run_id }}
           path: debian-artifacts
-          pattern: pdfcraft-debian-amd64
           merge-multiple: true
 
       - name: Prepare unified release
