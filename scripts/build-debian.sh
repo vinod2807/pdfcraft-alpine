@@ -35,6 +35,10 @@ api_get() {
 # against the SHA-256 in ATTRIBUTION.toml, and point the manifest at the
 # verified local copies. `cargo xtask models` still checks the same hashes, so
 # a mirror cannot substitute different weights.
+#
+# Some upstream versions list models as .onnx but mirrors/release tarballs have
+# .rten files (or vice versa). Try alternative extensions when the primary
+# name fails.
 prefetch_ocr_models() {
   _src="$1"
   _cache="$2"
@@ -56,54 +60,77 @@ prefetch_ocr_models() {
   fi
   while IFS="$(printf '\t')" read -r _file _sha _url; do
     _dest="$_cache/$_file"
+    _actual_file="$_file"
     if [ -f "$_dest" ] && [ "$(sha256sum "$_dest" | cut -d' ' -f1)" = "$_sha" ]; then
       _ok=1
     else
       _ok=0
-      for _u in "$_url" \
-        "https://github.com/deeplabua/deepocr/releases/download/models-v1/$_file" \
-        "https://raw.githubusercontent.com/baras-app/ocr-models/main/$_file"; do
-        echo "fetching $_file from $_u"
-        if curl -fsSL --retry 2 --max-time 300 -o "$_dest.part" "$_u"; then
-          if [ "$(sha256sum "$_dest.part" | cut -d' ' -f1)" = "$_sha" ]; then
-            mv "$_dest.part" "$_dest"
-            _ok=1
-            break
-          fi
-          echo "warning: $_u: SHA-256 mismatch, ignoring" >&2
-        fi
-        rm -f "$_dest.part"
-      done
-      if [ "$_ok" != "1" ] && [ -n "$_upstream" ] && [ -n "$_version" ]; then
-        # Last resort: the models shipped in the official release tarball for
-        # this version. It is large, so the small mirrors are tried first.
-        _tar="$WORK/pdfcraft-$_version-linux-x86_64.tar.gz"
-        _tar_dir="$WORK/release-models"
-        mkdir -p "$WORK"
-        if [ ! -f "$_tar" ]; then
-          echo "fetching the release tarball for its OCR models: $_tar"
-          curl -fsSL --retry 2 --max-time 900 -o "$_tar" \
-            "https://github.com/$_upstream/releases/download/v$_version/pdfcraft-$_version-linux-x86_64.tar.gz" \
-            || rm -f "$_tar"
-        fi
-        if [ -f "$_tar" ]; then
-          rm -rf "$_tar_dir"
-          mkdir -p "$_tar_dir"
-          if tar -xzf "$_tar" -C "$_tar_dir" "pdfcraft-$_version-linux-x86_64/share/pdfcraft/models/$_file" 2>/dev/null; then
-            _from="$_tar_dir/pdfcraft-$_version-linux-x86_64/share/pdfcraft/models/$_file"
-            if [ -f "$_from" ] && [ "$(sha256sum "$_from" | cut -d' ' -f1)" = "$_sha" ]; then
-              mv "$_from" "$_dest"
+      # Generate alternative file names by swapping extensions
+      _alts=""
+      case "$_file" in
+        *.onnx) _alts="${_file%.onnx}.rten" ;;
+        *.rten) _alts="${_file%.rten}.onnx" ;;
+      esac
+      for _try_file in "$_file" $_alts; do
+        _try_dest="$_cache/$_try_file"
+        for _u in "$_url" \
+          "https://github.com/deeplabua/deepocr/releases/download/models-v1/$_try_file" \
+          "https://raw.githubusercontent.com/baras-app/ocr-models/main/$_try_file"; do
+          echo "fetching $_try_file from $_u"
+          if curl -fsSL --retry 2 --max-time 300 -o "$_try_dest.part" "$_u"; then
+            if [ "$(sha256sum "$_try_dest.part" | cut -d' ' -f1)" = "$_sha" ]; then
+              mv "$_try_dest.part" "$_try_dest"
+              # If we used an alternative name, rename to the expected name
+              if [ "$_try_file" != "$_file" ]; then
+                mv "$_try_dest" "$_dest"
+              fi
+              _actual_file="$_try_file"
               _ok=1
+              break 2
+            fi
+            echo "warning: $_u: SHA-256 mismatch, ignoring" >&2
+          fi
+          rm -f "$_try_dest.part"
+        done
+        if [ "$_ok" = "1" ] && [ -n "$_upstream" ] && [ -n "$_version" ]; then
+          # Last resort: the models shipped in the official release tarball for
+          # this version. It is large, so the small mirrors are tried first.
+          _tar="$WORK/pdfcraft-$_version-linux-x86_64.tar.gz"
+          _tar_dir="$WORK/release-models"
+          mkdir -p "$WORK"
+          if [ ! -f "$_tar" ]; then
+            echo "fetching the release tarball for its OCR models: $_tar"
+            curl -fsSL --retry 2 --max-time 900 -o "$_tar" \
+              "https://github.com/$_upstream/releases/download/v$_version/pdfcraft-$_version-linux-x86_64.tar.gz" \
+              || rm -f "$_tar"
+          fi
+          if [ -f "$_tar" ]; then
+            rm -rf "$_tar_dir"
+            mkdir -p "$_tar_dir"
+            if tar -xzf "$_tar" -C "$_tar_dir" "pdfcraft-$_version-linux-x86_64/share/pdfcraft/models/$_try_file" 2>/dev/null; then
+              _from="$_tar_dir/pdfcraft-$_version-linux-x86_64/share/pdfcraft/models/$_try_file"
+              if [ -f "$_from" ] && [ "$(sha256sum "$_from" | cut -d' ' -f1)" = "$_sha" ]; then
+                mv "$_from" "$_dest"
+                _actual_file="$_try_file"
+                _ok=1
+                break
+              fi
             fi
           fi
         fi
-      fi
+      done
     fi
     if [ "$_ok" != "1" ]; then
       echo "error: could not fetch $_file (expected SHA-256 $_sha)" >&2
       return 1
     fi
-    sed -i "s|^url = \".*/$_file\"$|url = \"file://$_dest\"|" "$_src/ATTRIBUTION.toml"
+    # Update ATTRIBUTION.toml: replace the URL and the file name if we used an alternative
+    if [ "$_actual_file" != "$_file" ]; then
+      sed -i "s|^file = \"$_file\"$|file = \"$_actual_file\"|" "$_src/ATTRIBUTION.toml"
+      sed -i "s|^url = \".*/$_file\"$|url = \"file://$_dest\"|" "$_src/ATTRIBUTION.toml"
+    else
+      sed -i "s|^url = \".*/$_file\"$|url = \"file://$_dest\"|" "$_src/ATTRIBUTION.toml"
+    fi
   done <"$_cache/.entries"
   rm -f "$_cache/.entries"
   rm -rf "$WORK/release-models"
@@ -193,7 +220,8 @@ cd "$SRC"
 cargo generate-lockfile
 
 echo "=== fetching OCR models (Scan & OCR) ==="
-prefetch_ocr_models "$SRC" "$WORK/ocr-models" "$UPSTREAM" "$VERSION"
+prefetch_ocr_models "$SRC" "$WORK/ocr-models" "$UPSTREAM" "$VERSION" \
+  || { echo "ERROR: failed to fetch OCR models" >&2; exit 1; }
 
 echo "=== building Debian and RPM packages for $UPSTREAM @ $SOURCE_REF ==="
 packaging/linux/package.sh --formats "deb rpm"
