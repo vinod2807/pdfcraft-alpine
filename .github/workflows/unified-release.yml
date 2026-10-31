@@ -69,14 +69,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Find latest successful Alpine build run
-          RUN=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          # Find latest successful Alpine build run that has artifacts
+          RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=20" \
-            | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | select(.conclusion == "success") | .id' \
-            | head -1)
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=30" \
+            | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | select(.conclusion == "success") | .id')
+          
+          RUN=""
+          for r in $RUNS; do
+            ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$r/artifacts" \
+              | jq -r '.artifacts[].name' | grep -c 'pdfcraft-alpine-x86_64' || echo 0)
+            if [ "$ARTIFACTS" -gt 0 ]; then
+              RUN=$r
+              break
+            fi
+          done
+          
           if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
-            echo "No successful Alpine build found"
+            echo "No successful Alpine build with artifacts found"
             exit 1
           fi
           echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
@@ -89,14 +101,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          # Find latest successful Debian build run
-          RUN=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          # Find latest successful Debian build run that has artifacts
+          RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=20" \
-            | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | select(.conclusion == "success") | .id' \
-            | head -1)
+            "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=30" \
+            | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | select(.conclusion == "success") | .id')
+          
+          RUN=""
+          for r in $RUNS; do
+            ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$r/artifacts" \
+              | jq -r '.artifacts[].name' | grep -c 'pdfcraft-debian-amd64' || echo 0)
+            if [ "$ARTIFACTS" -gt 0 ]; then
+              RUN=$r
+              break
+            fi
+          done
+          
           if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
-            echo "No successful Debian build found"
+            echo "No successful Debian build with artifacts found"
             exit 1
           fi
           echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
