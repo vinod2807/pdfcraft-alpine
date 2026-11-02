@@ -10,6 +10,10 @@ on:
         description: 'Specific version to release (e.g. 0.14.0). Empty = use latest successful builds.'
         type: string
         required: false
+      force_build:
+        description: 'Force new builds even if plan job would skip them'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -18,6 +22,7 @@ permissions:
 jobs:
   create-unified-release:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,7 +48,7 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Find latest successful Alpine build
+      - name: Find latest successful Alpine build with artifacts
         id: alpine-find
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -70,12 +75,14 @@ jobs:
           
           if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
             echo "No successful Alpine build with artifacts found"
-            exit 1
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
+            echo "Found Alpine build: $RUN"
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
           fi
-          echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
-          echo "Found Alpine build: $RUN"
 
-      - name: Find latest successful Debian build
+      - name: Find latest successful Debian build with artifacts
         id: debian-find
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -102,10 +109,174 @@ jobs:
           
           if [ -z "$RUN" ] || [ "$RUN" = "null" ]; then
             echo "No successful Debian build with artifacts found"
+            echo "needs_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
+            echo "Found Debian build: $RUN"
+            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Trigger Alpine build if needed
+        if: steps.alpine-find.outputs.needs_build == 'true' || github.event.inputs.force_build == 'true'
+        id: alpine-trigger
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Triggering Alpine build with force=true..."
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build.yml/dispatches" \
+            -d '{"ref":"main","inputs":{"force":"true"}}')
+          echo "Dispatch response: $RESPONSE"
+          
+          # Wait a bit for the run to be created
+          sleep 10
+          
+          # Find the newly created run
+          for i in {1..30}; do
+            RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=5&branch=main&event=workflow_dispatch" \
+              | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Alpine Linux (musl)") | .id')
+            NEW_RUN=$(echo "$RUNS" | head -1)
+            if [ -n "$NEW_RUN" ] && [ "$NEW_RUN" != "null" ]; then
+              echo "alpine_run_id=$NEW_RUN" >> "$GITHUB_OUTPUT"
+              echo "Triggered Alpine build: $NEW_RUN"
+              break
+            fi
+            sleep 10
+          done
+          
+          if [ -z "${{ steps.alpine-trigger.outputs.alpine_run_id }}" ]; then
+            echo "Failed to trigger Alpine build"
             exit 1
           fi
-          echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
-          echo "Found Debian build: $RUN"
+
+      - name: Trigger Debian build if needed
+        if: steps.debian-find.outputs.needs_build == 'true' || github.event.inputs.force_build == 'true'
+        id: debian-trigger
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "Triggering Debian build with force=true..."
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-debian.yml/dispatches" \
+            -d '{"ref":"main","inputs":{"force":"true"}}')
+          echo "Dispatch response: $RESPONSE"
+          
+          # Wait a bit for the run to be created
+          sleep 10
+          
+          # Find the newly created run
+          for i in {1..30}; do
+            RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?per_page=5&branch=main&event=workflow_dispatch" \
+              | jq -r '.workflow_runs[] | select(.name == "Build PdfCraft for Debian and Ubuntu") | .id')
+            NEW_RUN=$(echo "$RUNS" | head -1)
+            if [ -n "$NEW_RUN" ] && [ "$NEW_RUN" != "null" ]; then
+              echo "debian_run_id=$NEW_RUN" >> "$GITHUB_OUTPUT"
+              echo "Triggered Debian build: $NEW_RUN"
+              break
+            fi
+            sleep 10
+          done
+          
+          if [ -z "${{ steps.debian-trigger.outputs.debian_run_id }}" ]; then
+            echo "Failed to trigger Debian build"
+            exit 1
+          fi
+
+      - name: Wait for Alpine build to complete
+        if: steps.alpine-find.outputs.needs_build == 'true' || github.event.inputs.force_build == 'true'
+        id: alpine-wait
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ steps.alpine-trigger.outputs.alpine_run_id }}"
+          echo "Waiting for Alpine build $RUN_ID to complete..."
+          
+          for i in {1..180}; do  # Wait up to 30 minutes (180 * 10s)
+            STATUS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID" \
+              | jq -r '.conclusion')
+            
+            if [ "$STATUS" = "success" ]; then
+              echo "Alpine build completed successfully"
+              echo "alpine_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+              break
+            elif [ "$STATUS" = "failure" ] || [ "$STATUS" = "cancelled" ] || [ "$STATUS" = "timed_out" ]; then
+              echo "Alpine build failed with status: $STATUS"
+              exit 1
+            fi
+            echo "Alpine build still running (status: ${STATUS:-unknown}), waiting..."
+            sleep 10
+          done
+          
+          if [ -z "${{ steps.alpine-wait.outputs.alpine_run_id }}" ]; then
+            echo "Alpine build timed out"
+            exit 1
+          fi
+
+      - name: Wait for Debian build to complete
+        if: steps.debian-find.outputs.needs_build == 'true' || github.event.inputs.force_build == 'true'
+        id: debian-wait
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID="${{ steps.debian-trigger.outputs.debian_run_id }}"
+          echo "Waiting for Debian build $RUN_ID to complete..."
+          
+          for i in {1..180}; do  # Wait up to 30 minutes (180 * 10s)
+            STATUS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN_ID" \
+              | jq -r '.conclusion')
+            
+            if [ "$STATUS" = "success" ]; then
+              echo "Debian build completed successfully"
+              echo "debian_run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+              break
+            elif [ "$STATUS" = "failure" ] || [ "$STATUS" = "cancelled" ] || [ "$STATUS" = "timed_out" ]; then
+              echo "Debian build failed with status: $STATUS"
+              exit 1
+            fi
+            echo "Debian build still running (status: ${STATUS:-unknown}), waiting..."
+            sleep 10
+          done
+          
+          if [ -z "${{ steps.debian-wait.outputs.debian_run_id }}" ]; then
+            echo "Debian build timed out"
+            exit 1
+          fi
+
+      - name: Determine final Alpine run ID
+        id: alpine-final
+        run: |
+          if [ "${{ steps.alpine-find.outputs.needs_build }}" = "true" ] || [ "${{ github.event.inputs.force_build }}" = "true" ]; then
+            echo "alpine_run_id=${{ steps.alpine-wait.outputs.alpine_run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "alpine_run_id=${{ steps.alpine-find.outputs.alpine_run_id }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine final Debian run ID
+        id: debian-final
+        run: |
+          if [ "${{ steps.debian-find.outputs.needs_build }}" = "true" ] || [ "${{ github.event.inputs.force_build }}" = "true" ]; then
+            echo "debian_run_id=${{ steps.debian-wait.outputs.debian_run_id }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "debian_run_id=${{ steps.debian-find.outputs.debian_run_id }}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Extract version from Alpine BUILD-INFO.txt
         id: version
@@ -113,8 +284,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          ALPINE_RUN="${{ steps.alpine-find.outputs.alpine_run_id }}"
-          DEBIAN_RUN="${{ steps.debian-find.outputs.debian_run_id }}"
+          ALPINE_RUN="${{ steps.alpine-final.outputs.alpine_run_id }}"
+          DEBIAN_RUN="${{ steps.debian-final.outputs.debian_run_id }}"
           
           # Verify both builds have artifacts
           ALPINE_ARTIFACTS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
@@ -199,7 +370,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p alpine-artifacts
-          RUN="${{ steps.alpine-find.outputs.alpine_run_id }}"
+          RUN="${{ steps.alpine-final.outputs.alpine_run_id }}"
           DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
@@ -223,7 +394,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p debian-artifacts
-          RUN="${{ steps.debian-find.outputs.debian_run_id }}"
+          RUN="${{ steps.debian-final.outputs.debian_run_id }}"
           DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
