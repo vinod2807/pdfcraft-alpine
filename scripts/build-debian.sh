@@ -144,6 +144,12 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   libxcursor-dev libegl1-mesa-dev libvulkan-dev
 rm -rf /var/lib/apt/lists/*
 
+echo "=== installing Rust ==="
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+source "$HOME/.cargo/env"
+rustc -V
+cargo -V
+
 echo "=== installing nfpm ==="
 NFPM_VERSION="${NFPM_VERSION:-2.43.0}"
 curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" \
