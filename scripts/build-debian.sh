@@ -146,8 +146,8 @@ rm -rf /var/lib/apt/lists/*
 
 echo "=== installing Rust ==="
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-. "$HOME/.cargo/env"
-export PATH="$HOME/.cargo/bin:$PATH"
+. "/github/work/cargo-home/env"
+export PATH="/github/work/cargo-home/bin:$PATH"
 rustc -V
 cargo -V
 
