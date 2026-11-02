@@ -1,10 +1,9 @@
 #!/bin/sh
 # Build the upstream PdfCraft source and produce its Debian and RPM packages.
-# This runs inside a glibc-based Rust container from build-debian.yml.
+# This runs inside a glibc-based Rust container from unified-build.yml.
 set -eu
 
 UPSTREAM="${UPSTREAM:-storytold/pdfcraft}"
-REF="${REF:-main}"
 TRACK_UPSTREAM_PR="${TRACK_UPSTREAM_PR:-false}"
 BASE_REPO="${BASE_REPO:-storytold/pdfcraft}"
 PR_NUMBER="${PR_NUMBER:-2808}"
@@ -187,10 +186,14 @@ if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   fi
   UPSTREAM="$BASE_REPO"
 else
+  # Not tracking PR, or PR not provided: build the release tag from BASE_TAG
+  # (plan job resolves BASE_TAG to latest release or PR head)
+  echo "Building release $BASE_TAG"
   git -C "$SRC" remote add origin "https://github.com/$UPSTREAM.git"
-  git -C "$SRC" fetch --depth 1 -q origin "$REF"
-  git -C "$SRC" checkout -q FETCH_HEAD
-  SOURCE_REF="$REF"
+  git -C "$SRC" fetch --no-tags -q origin "refs/tags/$BASE_TAG"
+  BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
+  git -C "$SRC" checkout -q --detach "$BASE_SHA"
+  SOURCE_REF="$BASE_TAG"
 fi
 
 VERSION="$(awk '/^\[/ { in_pkg = ($0 == "[workspace.package]"); next } in_pkg && $1 == "version" { gsub(/[" ]/, "", $3); print $3; exit }' "$SRC/Cargo.toml")"

@@ -1,0 +1,314 @@
+name: Unified PdfCraft Build & Release
+
+# Builds PdfCraft for Alpine (musl) and Debian/Ubuntu (glibc) in parallel,
+# then creates a unified release with APK, DEB, RPM, and tarballs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream:
+        description: Upstream repository to build
+        type: string
+        default: storytold/pdfcraft
+      track_pr:
+        description: Build PR #2808 while open, else latest release
+        type: boolean
+        default: false
+      release_tag:
+        description: Release tag prefix (version will be appended)
+        type: string
+        default: pdfcraft
+      force:
+        description: Force rebuild even if already built
+        type: boolean
+        default: false
+      craft_fonts_ref:
+        description: craft-fonts commit (empty to skip)
+        type: string
+        default: 3d9ab3a132ed0eff457e424226a435a901da30d3
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 06:00 UTC
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      build_alpine: ${{ steps.decide.outputs.build_alpine }}
+      build_debian: ${{ steps.decide.outputs.build_debian }}
+      upstream: ${{ steps.decide.outputs.upstream }}
+      tag: ${{ steps.decide.outputs.tag }}
+      version: ${{ steps.decide.outputs.version }}
+      pr_sha: ${{ steps.decide.outputs.pr_sha }}
+      pr_repo: ${{ steps.decide.outputs.pr_repo }}
+      pr_ref: ${{ steps.decide.outputs.pr_ref }}
+      pr_open: ${{ steps.decide.outputs.pr_open }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM_INPUT: ${{ inputs.upstream || 'storytold/pdfcraft' }}
+      TRACK_PR_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_pr) || 'false' }}
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'pdfcraft' }}
+      FORCE_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.force) || 'false' }}
+      PR_NUMBER: "2808"
+    steps:
+      - name: Decide build targets
+        id: decide
+        run: |
+          set -euo pipefail
+
+          if [ "$TRACK_PR_INPUT" = "true" ]; then
+            tag="$(gh api "repos/$UPSTREAM_INPUT/releases/latest" --jq .tag_name)"
+            pr="$(gh api "repos/$UPSTREAM_INPUT/pulls/$PR_NUMBER")"
+            state="$(printf '%s' "$pr" | jq -r .state)"
+            merged="$(printf '%s' "$pr" | jq -r .merged)"
+            pr_sha="$(printf '%s' "$pr" | jq -r .head.sha)"
+            pr_repo="$(printf '%s' "$pr" | jq -r .head.repo.clone_url)"
+            pr_ref="$(printf '%s' "$pr" | jq -r .head.ref)"
+            if [ "$state" = "open" ] && [ "$merged" = "false" ]; then
+              pr_open=true
+              pr_repo_full="$(printf '%s' "$pr" | jq -r .head.repo.full_name)"
+              tree="$(gh api "repos/$pr_repo_full/commits/$pr_sha" --jq .commit.tree.sha)"
+              version="PR-$PR_NUMBER"
+              echo "target: PR #$PR_NUMBER head $pr_sha"
+            else
+              pr_open=false
+              tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$tag" --jq .commit.tree.sha)"
+              version="${tag#v}"
+              echo "target: release $tag (PR closed/merged)"
+            fi
+          else
+            tag="$(gh api "repos/$UPSTREAM_INPUT/releases/latest" --jq .tag_name)"
+            version="${tag#v}"
+            tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$tag" --jq .commit.tree.sha)"
+            pr_open=false
+            pr_sha=""
+            pr_repo=""
+            pr_ref=""
+            echo "target: release $tag (version $version)"
+          fi
+          echo "target tree: $tree"
+
+          # Check existing builds
+          build_alpine=true
+          build_debian=true
+          if [ "$FORCE_INPUT" != "true" ]; then
+            for target in alpine debian; do
+              release_tag="${RELEASE_TAG_INPUT}-${target}"
+              if gh release download "$release_tag" -p BUILD-INFO.txt -O /tmp/BUILD-INFO-${target}.txt --clobber 2>/dev/null; then
+                built_version="$(sed -n 's/^PdfCraft *//p' /tmp/BUILD-INFO-${target}.txt | head -1)"
+                built_tree="$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO-${target}.txt | head -1)"
+                echo "$target built version:    ${built_version:-<none>}"
+                echo "$target built tree:       ${built_tree:-<none>}"
+                if [ -n "$built_version" ]; then
+                  if [ "$TRACK_PR_INPUT" = "true" ] && [ "$pr_open" = "true" ]; then
+                    if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ]; then
+                      eval "build_${target}=false"
+                      echo "$target: already built (same PR tree); skipping"
+                    fi
+                  else
+                    latest="$(printf '%s\n%s\n' "$built_version" "$version" | sort -V | tail -1)"
+                    if [ "$latest" = "$built_version" ]; then
+                      current_tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$tag" --jq .commit.tree.sha)"
+                      if [ -n "$built_tree" ] && [ "$built_tree" = "$current_tree" ]; then
+                        eval "build_${target}=false"
+                        echo "$target: already built (upstream $version <= built $built_version, same tree); skipping"
+                      else
+                        echo "$target: same version but different source tree; rebuilding"
+                      fi
+                    else
+                      echo "$target: new version available: $version > $built_version"
+                    fi
+                  fi
+                fi
+              else
+                echo "$target: no previous build found"
+              fi
+            done
+          fi
+
+          {
+            echo "build_alpine=$build_alpine"
+            echo "build_debian=$build_debian"
+            echo "upstream=$UPSTREAM_INPUT"
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "pr_sha=$pr_sha"
+            echo "pr_repo=$pr_repo"
+            echo "pr_ref=$pr_ref"
+            echo "pr_open=$pr_open"
+          } >> "$GITHUB_OUTPUT"
+
+  build-alpine:
+    needs: plan
+    if: needs.plan.outputs.build_alpine == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UPSTREAM: ${{ needs.plan.outputs.upstream }}
+      TRACK_UPSTREAM_PR: ${{ needs.plan.outputs.pr_open == 'true' }}
+      BASE_TAG: ${{ needs.plan.outputs.tag }}
+      PR_SHA: ${{ needs.plan.outputs.pr_sha }}
+      PR_REPO: ${{ needs.plan.outputs.pr_repo }}
+      PR_REF: ${{ needs.plan.outputs.pr_ref }}
+      PR_OPEN: ${{ needs.plan.outputs.pr_open }}
+      CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'pdfcraft' }}-alpine
+      RUST_IMAGE: rust:1.99-alpine3.24
+      PDFCRAFT_BUILD_LABEL: alpine
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "3"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+      - name: Prepare directories
+        run: mkdir -p work/src work/cargo-home work/target work/stage out
+      - name: Fetch Rust Alpine image
+        run: docker pull "$RUST_IMAGE"
+      - name: Cache cargo/target/src
+        uses: actions/cache@v4
+        with:
+          path: |
+            work/cargo-home
+            work/target
+            work/src
+            work/craft-fonts
+          key: alpine-v2-${{ needs.plan.outputs.version }}-${{ github.run_id }}
+          restore-keys: alpine-v2-${{ needs.plan.outputs.version }}-
+      - name: Build in Alpine container
+        run: |
+          docker run --rm \
+            --volume "$PWD:/github" \
+            --workdir /github \
+            --env UPSTREAM --env TRACK_UPSTREAM_PR --env BASE_TAG --env PR_SHA --env PR_REPO --env PR_REF --env PR_OPEN \
+            --env CRAFT_FONTS_REF --env PDFCRAFT_BUILD_LABEL --env RELEASE_TAG \
+            --env CARGO_HOME=/github/work/cargo-home --env CARGO_TARGET_DIR=/github/work/target \
+            --env CARGO_NET_GIT_FETCH_WITH_CLI --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
+            "$RUST_IMAGE" sh /github/scripts/build-alpine.sh
+      - name: Fix ownership
+        if: always()
+        run: |
+          docker run --rm --volume "$PWD:/github" --env U="$(id -u)" --env G="$(id -g)" "$RUST_IMAGE" sh -c 'chown -R "$U:$G" /github/out /github/work 2>/dev/null || true'
+      - name: Upload Alpine artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpine-artifacts
+          path: out/*
+          if-no-files-found: error
+
+  build-debian:
+    needs: plan
+    if: needs.plan.outputs.build_debian == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      UPSTREAM: ${{ needs.plan.outputs.upstream }}
+      TRACK_UPSTREAM_PR: ${{ needs.plan.outputs.pr_open == 'true' }}
+      BASE_TAG: ${{ needs.plan.outputs.tag }}
+      PR_SHA: ${{ needs.plan.outputs.pr_sha }}
+      PR_REPO: ${{ needs.plan.outputs.pr_repo }}
+      PR_REF: ${{ needs.plan.outputs.pr_ref }}
+      PR_OPEN: ${{ needs.plan.outputs.pr_open }}
+      CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'pdfcraft' }}-debian
+      # Use Ubuntu base for glibc build
+      BUILD_IMAGE: ubuntu:24.04
+      PDFCRAFT_BUILD_LABEL: debian
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: "3"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+      - name: Prepare directories
+        run: mkdir -p work/src work/cargo-home work/target work/stage out
+      - name: Fetch build image
+        run: docker pull "$BUILD_IMAGE"
+      - name: Cache cargo/target/src
+        uses: actions/cache@v4
+        with:
+          path: |
+            work/cargo-home
+            work/target
+            work/src
+            work/craft-fonts
+          key: debian-v2-${{ needs.plan.outputs.version }}-${{ github.run_id }}
+          restore-keys: debian-v2-${{ needs.plan.outputs.version }}-
+      - name: Build in Debian container
+        run: |
+          docker run --rm \
+            --volume "$PWD:/github" \
+            --workdir /github \
+            --env UPSTREAM --env TRACK_UPSTREAM_PR --env BASE_TAG --env PR_SHA --env PR_REPO --env PR_REF --env PR_OPEN \
+            --env CRAFT_FONTS_REF --env PDFCRAFT_BUILD_LABEL --env RELEASE_TAG \
+            --env CARGO_HOME=/github/work/cargo-home --env CARGO_TARGET_DIR=/github/work/target \
+            --env CARGO_NET_GIT_FETCH_WITH_CLI --env CARGO_TERM_COLOR --env CARGO_BUILD_JOBS \
+            "$BUILD_IMAGE" sh /github/scripts/build-debian.sh
+      - name: Fix ownership
+        if: always()
+        run: |
+          docker run --rm --volume "$PWD:/github" --env U="$(id -u)" --env G="$(id -g)" "$BUILD_IMAGE" sh -c 'chown -R "$U:$G" /github/out /github/work 2>/dev/null || true'
+      - name: Upload Debian artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debian-artifacts
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    needs: [plan, build-alpine, build-debian]
+    if: always() && (needs.build-alpine.result == 'success' || needs.build-alpine.result == 'skipped') && (needs.build-debian.result == 'success' || needs.build-debian.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      RELEASE_TAG_PREFIX: ${{ inputs.release_tag || 'pdfcraft' }}
+      VERSION: ${{ needs.plan.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Alpine artifacts
+        if: needs.build-alpine.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: alpine-artifacts
+          path: alpine-artifacts
+      - name: Download Debian artifacts
+        if: needs.build-debian.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: debian-artifacts
+          path: debian-artifacts
+      - name: Prepare release
+        run: |
+          mkdir -p release-assets
+          cp alpine-artifacts/* release-assets/ 2>/dev/null || true
+          cp debian-artifacts/* release-assets/ 2>/dev/null || true
+          ls -la release-assets/
+      - name: Create unified release
+        run: |
+          set -euo pipefail
+          TAG="${RELEASE_TAG_PREFIX}-${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* \
+              --title "PdfCraft ${VERSION} (Unified Release)" \
+              --notes $'Unofficial builds from storytold/pdfcraft v'${VERSION}$':\n• Alpine Linux (musl): .apk, .tar.gz\n• Debian/Ubuntu (glibc): .deb, .rpm' \
+              --prerelease=false
+          fi
+          echo "Release: https://github.com/${{ github.repository }}/releases/tag/$TAG"
