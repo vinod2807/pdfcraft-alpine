@@ -4,20 +4,20 @@
 #
 # Environment (set by the workflow):
 #   UPSTREAM          owner/name of the upstream repository to build
-#   REF               branch name or commit SHA to build
-#   TRACK_UPSTREAM_PR build PR_NUMBER while it is open, else the latest BASE_REPO release
-#   BASE_REPO         upstream repository whose latest release is tracked
-#   PR_NUMBER         pull request whose head is built while it is open
+#   TRACK_UPSTREAM_PR build PR #2808 while it is open, else the latest release
+#   BASE_TAG          release tag to build (resolved by plan job)
+#   PR_SHA            PR head commit SHA (when tracking PR)
+#   PR_REPO           PR head repository clone URL
+#   PR_REF            PR head branch name
+#   PR_OPEN           whether PR is open
 #   CRAFT_FONTS_REF   optional storytold/craft-fonts commit (empty to skip)
 #   PDFCRAFT_BUILD_LABEL  build label compiled into `--version`
 #   CARGO_HOME, CARGO_TARGET_DIR  point at bind mounts on the host (for caching)
 set -eu
 
 UPSTREAM="${UPSTREAM:?UPSTREAM is required}"
-REF="${REF:?REF is required}"
 TRACK_UPSTREAM_PR="${TRACK_UPSTREAM_PR:-false}"
-BASE_REPO="${BASE_REPO:-storytold/pdfcraft}"
-PR_NUMBER="${PR_NUMBER:-2808}"
+PR_NUMBER="2808"
 CRAFT_FONTS_REF="${CRAFT_FONTS_REF:-}"
 # Resolved by the workflow's plan job; empty for a standalone run.
 BASE_TAG="${BASE_TAG:-}"
@@ -203,15 +203,15 @@ if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   fi
   UPSTREAM="$BASE_REPO"
 else
-  EXPECTED_REMOTE="https://github.com/${UPSTREAM}.git"
-  git -C "$SRC" remote add origin "$EXPECTED_REMOTE"
-  if ! git -C "$SRC" fetch --depth 1 -q origin "$REF"; then
-    echo "ERROR: could not fetch '$REF' from $UPSTREAM" >&2
-    exit 1
+    # Not tracking PR, or PR not provided: build the release tag from BASE_TAG
+    # (plan job resolves BASE_TAG to latest release or PR head)
+    echo "Building release $BASE_TAG"
+    git -C "$SRC" remote add origin "https://github.com/$UPSTREAM.git"
+    git -C "$SRC" fetch --no-tags -q origin "refs/tags/$BASE_TAG"
+    BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
+    git -C "$SRC" checkout -q --detach "$BASE_SHA"
+    SOURCE_REF="$BASE_TAG"
   fi
-  git -C "$SRC" checkout -q FETCH_HEAD
-  SOURCE_REF="$REF"
-fi
 UPSTREAM_SHA="$(git -C "$SRC" rev-parse HEAD)"
 UPSTREAM_TREE="$(git -C "$SRC" rev-parse 'HEAD^{tree}')"
 echo "source commit: $UPSTREAM_SHA"
