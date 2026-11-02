@@ -214,7 +214,7 @@ jobs:
             sleep 10
           done
           
-          if [ -z "${{ steps.alpine-trigger.outputs.alpine_run_id }}" ]; then
+          if [ -z "$NEW_RUN" ]; then
             echo "Failed to trigger Alpine build"
             exit 1
           fi
@@ -253,7 +253,7 @@ jobs:
             sleep 10
           done
           
-          if [ -z "${{ steps.debian-trigger.outputs.debian_run_id }}" ]; then
+          if [ -z "$NEW_RUN" ]; then
             echo "Failed to trigger Debian build"
             exit 1
           fi
@@ -286,7 +286,7 @@ jobs:
             sleep 10
           done
           
-          if [ -z "${{ steps.alpine-wait.outputs.alpine_run_id }}" ]; then
+          if [ "$STATUS" != "success" ]; then
             echo "Alpine build timed out"
             exit 1
           fi
@@ -319,7 +319,7 @@ jobs:
             sleep 10
           done
           
-          if [ -z "${{ steps.debian-wait.outputs.debian_run_id }}" ]; then
+          if [ "$STATUS" != "success" ]; then
             echo "Debian build timed out"
             exit 1
           fi
