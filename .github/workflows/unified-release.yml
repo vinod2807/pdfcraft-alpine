@@ -54,6 +54,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          REQUESTED_VERSION="${{ github.event.inputs.version }}"
           # Find latest successful Alpine build run that has artifacts
           RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -77,9 +78,40 @@ jobs:
             echo "No successful Alpine build with artifacts found"
             echo "needs_build=true" >> "$GITHUB_OUTPUT"
           else
-            echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
-            echo "Found Alpine build: $RUN"
-            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+            # Check version if requested
+            if [ -n "$REQUESTED_VERSION" ]; then
+              DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
+                | jq -r '.artifacts[] | select(.name == "pdfcraft-alpine-x86_64") | .archive_download_url')
+              if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
+                mkdir -p /tmp/version-check
+                curl -L -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -o /tmp/version-check/alpine.zip "$DOWNLOAD_URL" 2>/dev/null
+                unzip -o /tmp/version-check/alpine.zip -d /tmp/version-check >/dev/null 2>&1
+                BUILD_INFO=$(find /tmp/version-check -name "BUILD-INFO.txt" | head -1)
+                if [ -f "$BUILD_INFO" ]; then
+                  BUILD_VERSION=$(grep -oE 'PdfCraft [0-9]+\.[0-9]+\.[0-9]+' "$BUILD_INFO" | head -1 | sed 's/PdfCraft //')
+                  if [ "$BUILD_VERSION" = "$REQUESTED_VERSION" ]; then
+                    echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
+                    echo "Found Alpine build: $RUN (version $BUILD_VERSION matches requested)"
+                    echo "needs_build=false" >> "$GITHUB_OUTPUT"
+                    rm -rf /tmp/version-check
+                    exit 0
+                  else
+                    echo "Alpine build $RUN is for version $BUILD_VERSION, requested $REQUESTED_VERSION"
+                  fi
+                fi
+                rm -rf /tmp/version-check
+              fi
+              echo "Version mismatch, will trigger new build"
+              echo "needs_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "alpine_run_id=$RUN" >> "$GITHUB_OUTPUT"
+              echo "Found Alpine build: $RUN"
+              echo "needs_build=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Find latest successful Debian build with artifacts
@@ -88,6 +120,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          REQUESTED_VERSION="${{ github.event.inputs.version }}"
           # Find latest successful Debian build run that has artifacts
           RUNS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -111,9 +144,40 @@ jobs:
             echo "No successful Debian build with artifacts found"
             echo "needs_build=true" >> "$GITHUB_OUTPUT"
           else
-            echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
-            echo "Found Debian build: $RUN"
-            echo "needs_build=false" >> "$GITHUB_OUTPUT"
+            # Check version if requested
+            if [ -n "$REQUESTED_VERSION" ]; then
+              DOWNLOAD_URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${{ github.repository }}/actions/runs/$RUN/artifacts" \
+                | jq -r '.artifacts[] | select(.name == "pdfcraft-debian-amd64") | .archive_download_url')
+              if [ -n "$DOWNLOAD_URL" ] && [ "$DOWNLOAD_URL" != "null" ]; then
+                mkdir -p /tmp/version-check
+                curl -L -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -o /tmp/version-check/debian.zip "$DOWNLOAD_URL" 2>/dev/null
+                unzip -o /tmp/version-check/debian.zip -d /tmp/version-check >/dev/null 2>&1
+                BUILD_INFO=$(find /tmp/version-check -name "BUILD-INFO.txt" | head -1)
+                if [ -f "$BUILD_INFO" ]; then
+                  BUILD_VERSION=$(grep -oE 'PdfCraft [0-9]+\.[0-9]+\.[0-9]+' "$BUILD_INFO" | head -1 | sed 's/PdfCraft //')
+                  if [ "$BUILD_VERSION" = "$REQUESTED_VERSION" ]; then
+                    echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
+                    echo "Found Debian build: $RUN (version $BUILD_VERSION matches requested)"
+                    echo "needs_build=false" >> "$GITHUB_OUTPUT"
+                    rm -rf /tmp/version-check
+                    exit 0
+                  else
+                    echo "Debian build $RUN is for version $BUILD_VERSION, requested $REQUESTED_VERSION"
+                  fi
+                fi
+                rm -rf /tmp/version-check
+              fi
+              echo "Version mismatch, will trigger new build"
+              echo "needs_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "debian_run_id=$RUN" >> "$GITHUB_OUTPUT"
+              echo "Found Debian build: $RUN"
+              echo "needs_build=false" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Trigger Alpine build if needed
