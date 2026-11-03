@@ -166,30 +166,42 @@ git -C "$SRC" config user.email "41898282+github-actions[bot]@users.noreply.gith
 if [ "$TRACK_UPSTREAM_PR" = "true" ]; then
   # The workflow's plan job resolves the target with an authenticated API
   # call and passes it in; only a standalone run needs to query GitHub here.
-  if [ -z "${BASE_TAG:-}" ] || [ -z "${PR_SHA:-}" ]; then
+  if [ -z "${BASE_TAG:-}" ]; then
     BASE_TAG="$(api_get "https://api.github.com/repos/$BASE_REPO/releases/latest" | jq -r .tag_name)"
+  fi
+  if [ -z "${PR_SHA:-}" ] || [ -z "${PR_OPEN:-}" ]; then
     PR_JSON="$(api_get "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER")"
     PR_OPEN="$(printf '%s\n' "$PR_JSON" | jq -r 'if .state == "open" and .merged == false then "true" else "false" end')"
     PR_SHA="$(printf '%s\n' "$PR_JSON" | jq -r .head.sha)"
     PR_REPO="$(printf '%s\n' "$PR_JSON" | jq -r .head.repo.clone_url)"
     PR_REF="$(printf '%s\n' "$PR_JSON" | jq -r .head.ref)"
   fi
-  # PR #2808 conflicts with the newest release, and merging it produces code
-  # that does not compile. While the PR is open, build its head as-is: it is
-  # self-consistent and carries the fix. Once the PR is merged or closed,
-  # build the newest release tag, which then contains the fix.
+  echo "Building release $BASE_TAG with PR #$PR_NUMBER integration if open"
+  git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git" 2>/dev/null || git -C "$SRC" remote set-url release "https://github.com/$BASE_REPO.git"
+  git -C "$SRC" fetch --no-tags -q release "refs/tags/$BASE_TAG"
+  BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
+  git -C "$SRC" checkout -q --detach "$BASE_SHA"
+  SOURCE_REF="$BASE_TAG"
   if [ "$PR_OPEN" = "true" ]; then
-    echo "PR #$PR_NUMBER: open, building head $PR_SHA"
-    git -C "$SRC" fetch --no-tags -q "$PR_REPO" "refs/heads/$PR_REF"
-    git -C "$SRC" checkout -q --detach "$PR_SHA"
-    SOURCE_REF="PR #$PR_NUMBER ($PR_SHA)"
-  else
-    echo "PR #$PR_NUMBER: not open, building release $BASE_TAG"
-    git -C "$SRC" remote add release "https://github.com/$BASE_REPO.git"
-    git -C "$SRC" fetch --no-tags -q release "refs/tags/$BASE_TAG"
-    BASE_SHA="$(git -C "$SRC" rev-list -n 1 FETCH_HEAD)"
-    git -C "$SRC" checkout -q --detach "$BASE_SHA"
-    SOURCE_REF="$BASE_TAG"
+    echo "PR #$PR_NUMBER is open ($PR_SHA); applying PR changes on top of $BASE_TAG"
+    PR_PATCH="$(mktemp)"
+    if api_get "https://api.github.com/repos/$BASE_REPO/pulls/$PR_NUMBER.patch" > "$PR_PATCH" 2>/dev/null && [ -s "$PR_PATCH" ]; then
+      if git -C "$SRC" apply --3way --whitespace=nowarn "$PR_PATCH"; then
+        git -C "$SRC" add -A
+        git -C "$SRC" -c user.name="PdfCraft build bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Apply PR #$PR_NUMBER ($PR_SHA) for $BASE_TAG" || true
+        SOURCE_REF="$BASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
+        echo "Applied PR #$PR_NUMBER successfully"
+      else
+        echo "WARNING: Failed to apply PR #$PR_NUMBER cleanly on top of $BASE_TAG; attempting with --reject" >&2
+        git -C "$SRC" apply --reject --whitespace=nowarn "$PR_PATCH" || true
+        git -C "$SRC" add -A
+        git -C "$SRC" -c user.name="PdfCraft build bot" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "Apply PR #$PR_NUMBER ($PR_SHA) for $BASE_TAG (partial)" || true
+        SOURCE_REF="$BASE_TAG + PR #$PR_NUMBER ($PR_SHA)"
+      fi
+    else
+      echo "WARNING: Could not download PR #$PR_NUMBER patch; building $BASE_TAG without PR changes" >&2
+    fi
+    rm -f "$PR_PATCH"
   fi
   UPSTREAM="$BASE_REPO"
 else

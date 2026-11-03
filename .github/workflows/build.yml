@@ -4,36 +4,41 @@ name: Build PdfCraft for Alpine Linux (musl)
 # publishes it as a GitHub Release. The source is fetched from the upstream
 # repository at build time; this repository holds only the build harness.
 #
-# Default target: latest upstream release tag (semantic version tracking).
-# Optional: track PR #2808 while open, then switch to releases.
+# Default target: the head of PR #2808 while it is open (it conflicts with the
+# newest release, so merging the two does not compile); once the PR is merged
+# or closed, the newest storytold/pdfcraft release tag.
 
 on:
   workflow_dispatch:
     inputs:
       upstream:
-        description: Upstream repository (owner/name) to build from
+        description: Upstream repository (owner/name) that carries the fix
         type: string
         default: storytold/pdfcraft
-      track_pr:
-        description: Build PR #2808 while open, else latest release
-        type: boolean
-        default: false
-      release_tag:
-        description: Release tag to publish the binaries to
+      ref:
+        description: Branch name or commit SHA to build
         type: string
-        default: alpine
-      force:
-        description: Build even when the source tree was already built
+        default: main
+      track_upstream_pr:
+        description: Build PR #2808 while it is open, else the latest upstream release
         type: boolean
-        default: false
+        default: true
       craft_fonts_ref:
         description: storytold/craft-fonts commit to embed (empty to skip)
         type: string
         default: 3d9ab3a132ed0eff457e424226a435a901da30d3
+      release_tag:
+        description: Release tag to publish the binaries to
+        type: string
+        default: pr79-alpine
+      force:
+        description: Build even when the source tree was already built
+        type: boolean
+        default: false
   push:
     branches: [main]
   schedule:
-    # Weekly check: the plan job skips the build when the upstream version
+    # Weekly check: the plan job skips the build when the merged source tree
     # matches the one recorded in the current release's BUILD-INFO.txt.
     - cron: '43 4 * * 1'
 
@@ -50,9 +55,8 @@ jobs:
     outputs:
       build: ${{ steps.decide.outputs.build }}
       upstream: ${{ steps.decide.outputs.upstream }}
+      ref: ${{ steps.decide.outputs.ref }}
       tag: ${{ steps.decide.outputs.tag }}
-      upstream_version: ${{ steps.decide.outputs.upstream_version }}
-      built_version: ${{ steps.decide.outputs.built_version }}
       pr_sha: ${{ steps.decide.outputs.pr_sha }}
       pr_repo: ${{ steps.decide.outputs.pr_repo }}
       pr_ref: ${{ steps.decide.outputs.pr_ref }}
@@ -61,20 +65,26 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
       UPSTREAM_INPUT: ${{ inputs.upstream || 'storytold/pdfcraft' }}
-      TRACK_PR_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_pr) || 'false' }}
-      RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'alpine' }}
-      FORCE_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.force) || 'false' }}
+      REF_INPUT: ${{ inputs.ref || 'main' }}
+      BASE_REPO: storytold/pdfcraft
       PR_NUMBER: "2808"
+      TRACK_PR_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_upstream_pr) || 'true' }}
+      RELEASE_TAG_INPUT: ${{ inputs.release_tag || 'pr79-alpine' }}
+      FORCE_INPUT: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.force) || 'false' }}
     steps:
       - name: Decide whether this tree was already built
         id: decide
         run: |
           set -euo pipefail
-          
+          tag=""
+          pr_sha=""
+          pr_repo=""
+          pr_ref=""
+          pr_open=false
           if [ "$TRACK_PR_INPUT" = "true" ]; then
-            # Track PR #2808 while open, else latest release
-            tag="$(gh api "repos/$UPSTREAM_INPUT/releases/latest" --jq .tag_name)"
-            pr="$(gh api "repos/$UPSTREAM_INPUT/pulls/$PR_NUMBER")"
+            # Always build from latest upstream release tag; apply PR #2808 if open
+            tag="$(gh api "repos/$BASE_REPO/releases/latest" --jq .tag_name)"
+            pr="$(gh api "repos/$BASE_REPO/pulls/$PR_NUMBER")"
             state="$(printf '%s' "$pr" | jq -r .state)"
             merged="$(printf '%s' "$pr" | jq -r .merged)"
             pr_sha="$(printf '%s' "$pr" | jq -r .head.sha)"
@@ -82,74 +92,50 @@ jobs:
             pr_ref="$(printf '%s' "$pr" | jq -r .head.ref)"
             if [ "$state" = "open" ] && [ "$merged" = "false" ]; then
               pr_open=true
-              pr_repo_full="$(printf '%s' "$pr" | jq -r .head.repo.full_name)"
-              tree="$(gh api "repos/$pr_repo_full/commits/$pr_sha" --jq .commit.tree.sha)"
-              upstream_version="PR-$PR_NUMBER"
-              echo "target: PR #$PR_NUMBER head $pr_sha"
-            else
-              pr_open=false
-              tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$tag" --jq .commit.tree.sha)"
-              upstream_version="${tag#v}"
-              echo "target: release $tag (PR closed/merged)"
             fi
-          else
-            # Default: track latest release by semantic version
-            tag="$(gh api "repos/$UPSTREAM_INPUT/releases/latest" --jq .tag_name)"
-            upstream_version="${tag#v}"
-            tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$tag" --jq .commit.tree.sha)"
-            pr_open=false
-            pr_sha=""
-            pr_repo=""
-            pr_ref=""
-            echo "target: release $tag (version $upstream_version)"
-          fi
-          echo "target tree: $tree"
-          
-          # Get version from our last build's BUILD-INFO.txt
-          built_version=""
-          if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt \
-               -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
-            built_version="$(sed -n 's/^PdfCraft *//p' /tmp/BUILD-INFO.txt | head -1)"
-          fi
-          echo "built version:    ${built_version:-<none>}"
-          
-          # Decide whether to build
-          build=true
-          if [ "$FORCE_INPUT" != "true" ]; then
-            if [ -n "$built_version" ]; then
-              if [ "$TRACK_PR_INPUT" = "true" ] && [ "$pr_open" = "true" ]; then
-                # PR mode: compare tree SHA
-                built_tree="$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)"
-                if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ]; then
-                  build=false
-                  echo "already built (same PR tree); skipping"
-                fi
-              else
-                # Release mode: semantic version comparison
-                latest="$(printf '%s\n%s\n' "$built_version" "$upstream_version" | sort -V | tail -1)"
-                if [ "$latest" = "$built_version" ]; then
-                  # Same version, check if tree changed
-                  current_tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$tag" --jq .commit.tree.sha)"
-                  built_tree="$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)"
-                  if [ -n "$built_tree" ] && [ "$built_tree" = "$current_tree" ]; then
-                    build=false
-                    echo "already built (upstream $upstream_version <= built $built_version, same tree); skipping"
-                  else
-                    echo "same version but different source tree; rebuilding"
-                  fi
-                else
-                  echo "new version available: $upstream_version > $built_version"
-                fi
+            # Compute tree of (release tag + PR patch if open)
+            tmpdir=$(mktemp -d)
+            git init -q "$tmpdir"
+            git -C "$tmpdir" config user.name "bot"
+            git -C "$tmpdir" config user.email "bot@example.com"
+            git -C "$tmpdir" remote add upstream "https://github.com/$BASE_REPO.git"
+            git -C "$tmpdir" fetch --no-tags -q upstream "refs/tags/$tag"
+            git -C "$tmpdir" checkout -q --detach FETCH_HEAD
+            if [ "$pr_open" = "true" ]; then
+              gh api "repos/$BASE_REPO/pulls/$PR_NUMBER.patch" > "$tmpdir/pr.patch" 2>/dev/null || true
+              if [ -s "$tmpdir/pr.patch" ]; then
+                git -C "$tmpdir" apply --3way --whitespace=nowarn "$tmpdir/pr.patch" 2>/dev/null || git -C "$tmpdir" apply --reject --whitespace=nowarn "$tmpdir/pr.patch" 2>/dev/null || true
+                git -C "$tmpdir" add -A 2>/dev/null || true
+                git -C "$tmpdir" -c user.name="bot" -c user.email="bot@example.com" commit -q -m "apply pr" 2>/dev/null || true
               fi
             fi
+            tree="$(git -C "$tmpdir" rev-parse 'HEAD^{tree}')"
+            rm -rf "$tmpdir"
+            echo "target: release $tag + PR #$PR_NUMBER open=$pr_open"
+          else
+            sha="$(gh api "repos/$UPSTREAM_INPUT/commits/$REF_INPUT" --jq .sha)"
+            tree="$(gh api "repos/$UPSTREAM_INPUT/commits/$sha" --jq .commit.tree.sha)"
+            echo "target: $UPSTREAM_INPUT@$REF_INPUT ($sha)"
           fi
-          
+          echo "target tree: $tree"
+          build=true
+          if [ "$FORCE_INPUT" != "true" ]; then
+            built_tree=""
+            if gh release download "$RELEASE_TAG_INPUT" -p BUILD-INFO.txt \
+                 -O /tmp/BUILD-INFO.txt --clobber 2>/dev/null; then
+              built_tree="$(sed -n 's/^tree  *: *//p' /tmp/BUILD-INFO.txt | head -1)"
+            fi
+            echo "built tree:  ${built_tree:-<none>}"
+            if [ -n "$built_tree" ] && [ "$built_tree" = "$tree" ]; then
+              build=false
+              echo "already built; skipping"
+            fi
+          fi
           {
             echo "build=$build"
             echo "upstream=$UPSTREAM_INPUT"
+            echo "ref=$REF_INPUT"
             echo "tag=$tag"
-            echo "upstream_version=$upstream_version"
-            echo "built_version=${built_version:-}"
             echo "pr_sha=$pr_sha"
             echo "pr_repo=$pr_repo"
             echo "pr_ref=$pr_ref"
@@ -163,14 +149,17 @@ jobs:
     timeout-minutes: 355
     env:
       UPSTREAM: ${{ inputs.upstream || 'storytold/pdfcraft' }}
-      TRACK_UPSTREAM_PR: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_pr) || 'false' }}
+      REF: ${{ inputs.ref || 'main' }}
+      TRACK_UPSTREAM_PR: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.track_upstream_pr) || 'true' }}
+      BASE_REPO: storytold/pdfcraft
+      PR_NUMBER: "2808"
       BASE_TAG: ${{ needs.plan.outputs.tag }}
       PR_SHA: ${{ needs.plan.outputs.pr_sha }}
       PR_REPO: ${{ needs.plan.outputs.pr_repo }}
       PR_REF: ${{ needs.plan.outputs.pr_ref }}
       PR_OPEN: ${{ needs.plan.outputs.pr_open }}
       CRAFT_FONTS_REF: ${{ inputs.craft_fonts_ref || '3d9ab3a132ed0eff457e424226a435a901da30d3' }}
-      RELEASE_TAG: ${{ inputs.release_tag || 'alpine' }}
+      RELEASE_TAG: ${{ inputs.release_tag || 'pr79-alpine' }}
       # Pinned so a surprise rust:alpine bump cannot silently change the build.
       RUST_IMAGE: rust:1.99-alpine3.24
       PDFCRAFT_BUILD_LABEL: alpine
